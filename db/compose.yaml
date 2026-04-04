@@ -1,0 +1,6 @@
+# postgres-docker/compose.yaml
+name: pg-stacks
+
+services:
+  # Новый стек стартует пустым.
+  # Сервисы добавляются через `bash ops/add_service.sh ...`.

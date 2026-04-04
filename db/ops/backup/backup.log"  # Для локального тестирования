@@ -1,0 +1,9 @@
+2025-08-22 05:59:09 [INFO] Начало бэкапа (PID: 93460)
+2025-08-22 05:59:09 [INFO] Обработка сервиса: test_fix
+2025-08-22 05:59:10 [INFO] Создание бэкапа: test_fi -> /Users/stepanorlov/Desktop/cursor_files/database_postgres_v2/postgres-docker/db_backups"  # Для локального тестирования/test_fix/2025-08-22/test_fi_2025-08-22_05-59.sql.gz
+pg_dump: error: connection to server on socket "/var/run/postgresql/.s.PGSQL.5432" failed: FATAL:  database "test_fi" does not exist
+2025-08-22 05:59:10 [ERROR] Ошибка создания бэкапа для test_fix
+2025-08-22 05:59:10 [INFO] Завершение бэкапа
+2025-08-22 05:59:10 [STATS] Обработано сервисов: 1
+2025-08-22 05:59:10 [STATS] Успешных бэкапов: 0
+2025-08-22 05:59:10 [STATS] Неудачных бэкапов: 1
