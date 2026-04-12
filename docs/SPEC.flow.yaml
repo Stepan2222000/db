@@ -16,16 +16,17 @@ purpose: |
   - удалить сервис, если он больше не нужен
 
   Ключевые правила системы:
-  - единственный источник правды по сервисам — `.env.<service>`
+  - единственный источник правды по сервисам — `services/.env.<service>`
   - имя сервиса совпадает с именем файла, контейнера и базы
   - `compose.yaml` всегда генерируется заново, а не редактируется руками
   - любая ошибка останавливает команду сразу, без rollback и без retry
+  - вывод через `logging`, не через `print`
 
 definitions:
   - id: global-env
     body_markdown: |
       Глобальный `.env` хранит общие настройки стека:
-      - версию PostgreSQL образа, по спецификации фиксированную на `18`
+      - версию PostgreSQL образа (по умолчанию `18`, оператор может поставить любую)
       - пароль по умолчанию для новых сервисов
       - расписание автобэкапов, флаг включения, формат, таймаут
       - SSH-доступ к remote-серверу: IP, логин, пароль
@@ -40,7 +41,7 @@ definitions:
 
   - id: service-env-file
     body_markdown: |
-      Каждый сервис описан отдельным файлом `.env.<service>`.
+      Каждый сервис описан отдельным файлом `services/.env.<service>`.
 
       Обязательные поля:
       - пользователь PostgreSQL
@@ -55,6 +56,18 @@ definitions:
 
       Имя файла совпадает с именем сервиса, контейнера и базы. Оператор может создавать и редактировать эти файлы вручную.
 
+      Имена ключей фиксированы:
+      - `POSTGRES_USER`
+      - `POSTGRES_PASSWORD`
+      - `POSTGRES_PORT`
+
+      Опциональные ключи:
+      - `POSTGRES_MAX_CONNECTIONS`
+      - `POSTGRES_BACKUP_DISABLED`
+      - `POSTGRES_BACKUP_FORMAT`
+      - `POSTGRES_MEMORY_LIMIT`
+      - `POSTGRES_CPU_LIMIT`
+
       [Поведение POSTGRES_PASSWORD при инициализации](https://hub.docker.com/_/postgres)
       [max_connections](https://www.postgresql.org/docs/current/runtime-config-connection.html)
       [deploy.resources.limits](https://docs.docker.com/reference/compose-file/deploy/#resources)
@@ -66,12 +79,13 @@ definitions:
       Для каждого сервиса в него попадают:
       - образ `postgres:18`
       - `container_name`, совпадающий с именем сервиса
-      - `env_file`, указывающий на `.env.<service>`
+      - `env_file`, указывающий на `services/.env.<service>`
+      - derived `environment.POSTGRES_DB=<service>`, чтобы имя базы совпадало с именем сервиса
       - проброс внешнего порта на `5432`
-      - volume `./data/<service>:/var/lib/postgresql/data` (проверить актуальный `PGDATA` для PostgreSQL 18)
+      - volume `./data/<service>:/var/lib/postgresql/18/docker`
       - `restart: unless-stopped`
       - healthcheck на `pg_isready`
-      - `shm_size`, пересчитанный как `RAM * 0.9 / количество_сервисов`
+      - `shm_size` = RAM * 0.9 (это лимит, не резервирование — одинаковый для всех контейнеров, делить на количество сервисов не нужно)
       - `command: postgres -c max_connections=<N>`, если лимит подключений задан
       - `deploy.resources.limits`, если для сервиса заданы CPU или memory лимиты
 
@@ -247,7 +261,7 @@ modules:
           - имя сервиса должно состоять только из букв, цифр и подчёркиваний
           - если порт не передан, нужно подобрать свободный, начиная с `5401`, просматривая все [[service-env-file]]
           - если порт передан, нужно проверить диапазон `1024..65535` и отсутствие конфликта с другими сервисами
-          - файл `.env.<name>` не должен уже существовать
+          - файл `services/.env.<name>` не должен уже существовать
         links:
           - to: create-materialize-service
             condition: имя и порт валидны, а конфиг ещё не существует
@@ -290,7 +304,7 @@ modules:
             condition: нужно включить регулярные бэкапы и метрики
 
   - id: sync-stack
-    purpose: Привести Docker Compose стек в соответствие с текущими `.env.<service>` файлами.
+    purpose: Привести Docker Compose стек в соответствие с текущими `services/.env.<service>` файлами.
     input: Уже существующие или вручную отредактированные конфиги сервисов.
     output: Актуальный `compose.yaml`, корректные каталоги данных и синхронизированные пароли внутри баз.
     steps:
@@ -556,7 +570,7 @@ modules:
         body_markdown: |
           Команда `db remove <name> [--force]` сначала проверяет, что сервис существует.
 
-          Если `.env.<name>` не найден:
+          Если `services/.env.<name>` не найден:
           - показывает список существующих сервисов
           - завершает работу без изменений
 
