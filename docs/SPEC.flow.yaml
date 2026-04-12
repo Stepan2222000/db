@@ -30,11 +30,13 @@ definitions:
       - расписание автобэкапов, флаг включения, формат, таймаут
       - SSH-доступ к remote-серверу: IP, логин, пароль
       - корневой путь для remote-бэкапов
-      - параметры GFS-ротации: дни, недели, месяцы
+      - ротация бэкапов: максимум дней хранения и максимум файлов на сервис
       - путь к лог-файлу бэкапов и его максимальный размер
       - флаг включения метрик и интервал сбора, по умолчанию 5 минут
 
       Этот файл не хранит список сервисов. Реестр сервисов существует только через [[service-env-file]].
+
+      [Синтаксис .env файлов](https://docs.docker.com/compose/env-file/)
 
   - id: service-env-file
     body_markdown: |
@@ -53,6 +55,10 @@ definitions:
 
       Имя файла совпадает с именем сервиса, контейнера и базы. Оператор может создавать и редактировать эти файлы вручную.
 
+      [Поведение POSTGRES_PASSWORD при инициализации](https://hub.docker.com/_/postgres)
+      [max_connections](https://www.postgresql.org/docs/current/runtime-config-connection.html)
+      [deploy.resources.limits](https://docs.docker.com/reference/compose-file/deploy/#resources)
+
   - id: generated-compose
     body_markdown: |
       `compose.yaml` — полностью генерируемый артефакт из всех [[service-env-file]].
@@ -62,14 +68,21 @@ definitions:
       - `container_name`, совпадающий с именем сервиса
       - `env_file`, указывающий на `.env.<service>`
       - проброс внешнего порта на `5432`
-      - volume `./data/<service>:/var/lib/postgresql/data`
+      - volume `./data/<service>:/var/lib/postgresql/data` (проверить актуальный `PGDATA` для PostgreSQL 18)
       - `restart: unless-stopped`
       - healthcheck на `pg_isready`
       - `shm_size`, пересчитанный как `RAM * 0.9 / количество_сервисов`
       - `command: postgres -c max_connections=<N>`, если лимит подключений задан
       - `deploy.resources.limits`, если для сервиса заданы CPU или memory лимиты
 
+      Важно: в PostgreSQL 18 `PGDATA` изменился на `/var/lib/postgresql/18/docker`.
+      Volume mount должен указывать на этот путь.
+
       Первая строка файла должна быть служебным предупреждением о том, что файл нельзя редактировать руками и нужно использовать `db apply`.
+
+      [Compose services reference](https://docs.docker.com/reference/compose-file/services/) — `command`, `container_name`, `env_file`, `healthcheck`, `restart`, `shm_size`
+      [shm_size](https://docs.docker.com/reference/compose-file/services/#shm_size)
+      [healthcheck](https://docs.docker.com/reference/compose-file/services/#healthcheck)
 
   - id: service-data-dir
     body_markdown: |
@@ -79,6 +92,8 @@ definitions:
       - монтируется в контейнер как datadir
       - создаётся при `db add`
       - также создаётся при `db apply`, если конфиг есть, а каталога ещё нет
+
+      [PostgreSQL Docker image — initialization](https://github.com/docker-library/docs/blob/master/postgres/content.md)
 
   - id: local-dumps
     body_markdown: |
@@ -106,28 +121,42 @@ definitions:
       - старые `.tmp` очищаются при следующем прогоне
       - ротация работает только по финальным `.sql.gz` или `.sql` файлам
 
-  - id: gfs-rotation
+  - id: backup-rotation
     body_markdown: |
-      GFS-ротация удаляет устаревшие бэкапы на remote после каждой успешной отправки.
+      Ротация удаляет устаревшие бэкапы на remote после каждой успешной отправки.
 
-      Правила (дефолты из [[global-env]]):
-      - хранить все бэкапы за последние 7 дней
-      - хранить воскресные копии за последние 4 недели
-      - хранить копии первого числа месяца за последние 3 месяца
-      - всё остальное удаляется
+      Оператор задаёт в [[global-env]] два параметра:
+      - максимум дней хранения (например, 60)
+      - максимум файлов на сервис (например, 14)
 
-      Итого максимум ~14 файлов на сервис.
+      Алгоритм:
+      - всё старше максимума дней — удаляется безусловно
+      - из оставшихся файлов оставить не больше N штук,
+        равномерно распределённых по времени
+      - самый свежий и самый старый — всегда сохраняются
+      - остальные выбираются так, чтобы интервалы между ними
+        были примерно одинаковые
 
-      Ротация выполняется через то же SFTP-соединение, которое использовалось для передачи.
+      Ротация выполняется через SFTP (`listdir` + `remove`).
       Ошибка ротации некритична: лишние файлы останутся на remote и будут очищены при следующем прогоне.
+
+      [SFTPClient.listdir_attr](https://docs.paramiko.org/en/stable/api/sftp.html)
 
   - id: runtime-tooling
     body_markdown: |
       Основные внешние механизмы, через которые проходит рабочий flow:
-      - `docker compose` поднимает и пересоздаёт контейнеры
-      - `docker exec` запускает `pg_dump` и `psql` внутри контейнера
-      - `paramiko` держит SSH/SFTP-соединение к remote-серверу
-      - `crontab` устанавливает и удаляет периодические задачи
+
+      - `docker compose` — поднимает и пересоздаёт контейнеры.
+        [CLI reference](https://docs.docker.com/reference/cli/docker/compose/)
+      - `docker exec` — запускает `pg_dump` и `psql` внутри контейнера.
+        [pg_dump](https://www.postgresql.org/docs/current/app-pgdump.html),
+        [psql](https://www.postgresql.org/docs/current/app-psql.html),
+        [pg_isready](https://www.postgresql.org/docs/current/app-pg-isready.html)
+      - `paramiko` — SSH/SFTP-соединение к remote-серверу по паролю.
+        [SSHClient](https://docs.paramiko.org/en/stable/api/client.html),
+        [SFTPClient](https://docs.paramiko.org/en/stable/api/sftp.html)
+      - `crontab` — периодические задачи.
+        [python-crontab](https://pypi.org/project/python-crontab/)
 
   - id: apply-password-sync
     body_markdown: |
@@ -147,6 +176,10 @@ definitions:
       - локальное подключение доверено PostgreSQL
       - повторный `ALTER ROLE` с тем же паролем остаётся идемпотентным
 
+      [ALTER ROLE](https://www.postgresql.org/docs/current/sql-alterrole.html)
+      [pg_hba.conf — trust auth](https://www.postgresql.org/docs/current/auth-pg-hba-conf.html)
+      [Entrypoint script — логика инициализации](https://github.com/docker-library/postgres/blob/master/docker-entrypoint.sh)
+
   - id: metrics-db
     body_markdown: |
       `metrics.db` — SQLite база с метриками контейнеров.
@@ -158,6 +191,9 @@ definitions:
       - дисковый I/O
 
       Источник данных — `docker stats --no-stream`. Отдельной команды для просмотра нет: оператор открывает SQLite сам.
+
+      [docker stats](https://docs.docker.com/reference/cli/docker/container/stats/) — `--no-stream`, `--format`, JSON output
+      [Python sqlite3](https://docs.python.org/3/library/sqlite3.html)
 
 modules:
   - id: operator-entry
@@ -263,7 +299,7 @@ modules:
           Команда `db apply` начинает с подготовки файлового и compose-состояния:
           - создаёт [[service-data-dir]] для каждого [[service-env-file]], у которого каталога ещё нет
           - заново собирает [[generated-compose]] из всех сервисных конфигов
-          - пересчитывает `shm_size` из `/proc/meminfo` по формуле `RAM * 0.9 / количество_сервисов`
+          - пересчитывает `shm_size` из [`/proc/meminfo`](https://man7.org/linux/man-pages/man5/proc_meminfo.5.html) по формуле `RAM * 0.9 / количество_сервисов`
         links:
           - to: sync-check-conflicts
             condition: новый compose собран и готов к проверке
@@ -332,7 +368,7 @@ modules:
             condition: нужно выбрать другое действие без изменения данных
 
   - id: backup-remote
-    purpose: Отправить бэкап на remote-сервер напрямую потоком и удерживать GFS-ротацию.
+    purpose: Отправить бэкап на remote-сервер напрямую потоком и выполнить ротацию.
     input: Все сервисы или один выбранный сервис, для которого не отключён бэкап.
     output: Финальные remote-файлы бэкапов и обновлённое состояние ротации.
     steps:
@@ -368,7 +404,7 @@ modules:
         body_markdown: |
           После успешной передачи команда:
           - переименовывает `.tmp` в финальный файл в [[remote-backup-storage]]
-          - запускает [[gfs-rotation]] через то же SFTP-соединение
+          - запускает [[backup-rotation]] через то же SFTP-соединение
           - выводит статистику: сколько сервисов обработано, сколько завершилось успешно, были ли ошибки
         links:
           - to: restore-choose-backup
@@ -395,7 +431,7 @@ modules:
       - id: dump-check-disk-space
         body_markdown: |
           Перед записью локального файла команда оценивает свободное место:
-          - запрашивает `pg_database_size()`
+          - запрашивает [`pg_database_size()`](https://www.postgresql.org/docs/current/functions-admin.html)
           - умножает размер на `0.3`, если дамп будет сжат через `gzip`
           - умножает размер на `1.0`, если нужен plain-формат
           - при нехватке места показывает, сколько нужно и сколько доступно, затем останавливается
