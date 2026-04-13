@@ -167,6 +167,7 @@ modules:
 ```
 
 Канонический пример формата — в `.claude/skills/yaml-author/references/example.md`.
+Пример входа и результата: `references/example-input.md` → `references/example-output.md`. Прочитай оба, чтобы понять какой уровень абстракции и стиль ожидается.
 Частые ошибки формата — в `.claude/skills/yaml-author/references/common-mistakes.md`.
 
 ## Рекомендации По Стилю

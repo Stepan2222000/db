@@ -1,2 +1,1 @@
-"""Stage 1 implementation for the db project."""
-
+"""Bootstrap package for the db CLI."""

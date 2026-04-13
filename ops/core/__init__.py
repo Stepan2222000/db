@@ -1,2 +1,1 @@
-"""Core primitives used by the db CLI."""
-
+"""Core helpers for stage 1."""
