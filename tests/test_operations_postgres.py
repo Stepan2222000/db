@@ -107,6 +107,77 @@ def test_run_psql_uses_stdin_when_requested(monkeypatch: pytest.MonkeyPatch) -> 
     assert result.stdout == "ok\n"
 
 
+def test_query_database_size_parses_scalar_output(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    service_config = ServiceConfig(
+        name="demo",
+        env_path=tmp_path / "services" / ".env.demo",
+        postgres_user="admin",
+        postgres_password="secret",
+        postgres_port=5401,
+    )
+
+    monkeypatch.setattr(
+        postgres_ops,
+        "run_psql",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout="7861951\n",
+            stderr="",
+        ),
+    )
+
+    assert postgres_ops.query_database_size("demo", service_config) == 7861951
+
+
+def test_query_database_size_rejects_empty_and_non_integer_output(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    service_config = ServiceConfig(
+        name="demo",
+        env_path=tmp_path / "services" / ".env.demo",
+        postgres_user="admin",
+        postgres_password="secret",
+        postgres_port=5401,
+    )
+
+    monkeypatch.setattr(
+        postgres_ops,
+        "run_psql",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout="\n",
+            stderr="",
+        ),
+    )
+    with pytest.raises(ValueError, match="empty result"):
+        postgres_ops.query_database_size("demo", service_config)
+
+    monkeypatch.setattr(
+        postgres_ops,
+        "run_psql",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout="NaN\n",
+            stderr="",
+        ),
+    )
+    with pytest.raises(ValueError, match="non-integer"):
+        postgres_ops.query_database_size("demo", service_config)
+
+
+def test_format_size_gb_uses_fixed_two_decimal_output() -> None:
+    assert postgres_ops.format_size_gb(0) == "0.00 GB"
+    assert postgres_ops.format_size_gb(1024 ** 3) == "1.00 GB"
+    assert postgres_ops.format_size_gb(7861951) == "0.01 GB"
+
+
 def test_sync_service_password_escapes_password_in_sql(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     captured: dict[str, object] = {}
     service_config = ServiceConfig(

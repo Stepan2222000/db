@@ -45,6 +45,8 @@ def run_psql(
     sql: str,
     *,
     stdin_sql: bool = False,
+    tuples_only: bool = False,
+    no_align: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     command = [
         "psql",
@@ -55,6 +57,10 @@ def run_psql(
         "--dbname",
         database,
     ]
+    if tuples_only:
+        command.append("--tuples-only")
+    if no_align:
+        command.append("--no-align")
     if not stdin_sql:
         command.extend(["-c", sql])
 
@@ -101,6 +107,36 @@ def sync_service_password(
         sql,
         stdin_sql=True,
     )
+
+
+def query_database_size(
+    container_name: str,
+    service_config: ServiceConfig,
+) -> int:
+    result = run_psql(
+        container_name,
+        service_config.postgres_user,
+        service_config.name,
+        "SELECT pg_database_size(current_database());",
+        tuples_only=True,
+        no_align=True,
+    )
+    value = result.stdout.strip()
+    if not value:
+        raise ValueError(
+            f"{container_name}: pg_database_size returned an empty result"
+        )
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"{container_name}: pg_database_size returned a non-integer value: {value!r}"
+        ) from exc
+
+
+def format_size_gb(size_bytes: int) -> str:
+    size_gb = size_bytes / (1024 ** 3)
+    return f"{size_gb:.2f} GB"
 
 
 def sql_literal(value: str) -> str:
