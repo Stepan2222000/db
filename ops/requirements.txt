@@ -1,0 +1,4 @@
+typer
+PyYAML
+paramiko
+python-crontab
