@@ -54,6 +54,27 @@ def test_compose_stop_and_down_build_expected_commands(
     ]
 
 
+def test_docker_rm_force_builds_expected_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run(command, cwd=None, capture_output=False, text=False, check=False):
+        captured["command"] = command
+        captured["cwd"] = cwd
+        captured["check"] = check
+        return subprocess.CompletedProcess(command, 0, stdout="removed\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = docker_core.docker_rm_force("db-test", project_root=Path("/tmp/project"))
+
+    assert captured["command"] == ["docker", "rm", "-f", "db-test"]
+    assert captured["cwd"] == Path("/tmp/project")
+    assert captured["check"] is True
+    assert result.stdout == "removed\n"
+
+
 def test_docker_exec_capture_builds_expected_command(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -32,6 +32,16 @@ def compose_down(project_root: Path) -> CommandResult:
     return _run_capture(["docker", "compose", "down"], cwd=project_root)
 
 
+def docker_rm_force(
+    container_name: str,
+    project_root: Path | None = None,
+) -> CommandResult:
+    return _run_capture(
+        ["docker", "rm", "-f", container_name],
+        cwd=project_root,
+    )
+
+
 def docker_exec_capture(
     container_name: str,
     argv: list[str],

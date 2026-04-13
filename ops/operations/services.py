@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import os
 from difflib import unified_diff
 from pathlib import Path
 from typing import Iterable
 
+from ops.core.compose import write_empty_compose
 from ops.core.config import load_service_config, service_env_path
 from ops.core.discovery import discover_services
 from ops.core.docker import container_exists, container_is_running, docker_inspect_json
 from ops.core.env_files import write_env_file
 from ops.core.models import GlobalConfig, ServiceConfig
+from ops.operations.postgres import format_size_gb
 
 
 def pick_service_port(
@@ -87,6 +90,14 @@ def regenerate_compose_with_previous_state(project_root: Path) -> tuple[Path, st
     return new_path, previous_text
 
 
+def regenerate_compose_for_current_services(project_root: Path) -> Path:
+    from ops.cli import generate_compose
+
+    if discover_services(project_root):
+        return generate_compose(project_root)
+    return write_empty_compose(project_root)
+
+
 def compose_diff_lines(project_root: Path, previous_compose_text: str | None) -> list[str]:
     compose_text = (project_root / "compose.yaml").read_text(encoding="utf-8")
     previous_lines = previous_compose_text.splitlines(keepends=True) if previous_compose_text else []
@@ -123,6 +134,35 @@ def summarize_apply_changes(
     for service_config in sorted(desired_service_configs, key=lambda item: item.name):
         lines.extend(_summarize_service(service_config, created_data_dirs))
 
+    return lines
+
+
+def directory_size_bytes(path: Path) -> int:
+    total_size = 0
+    for current_root, _, file_names in os.walk(path):
+        for file_name in file_names:
+            total_size += (Path(current_root) / file_name).stat().st_size
+    return total_size
+
+
+def summarize_remove_target(
+    project_root: Path,
+    service_name: str,
+) -> list[str]:
+    env_path = service_env_path(project_root, service_name)
+    data_dir = project_root / "data" / service_name
+    container_status = "missing"
+    if container_exists(service_name):
+        container_status = "running" if container_is_running(service_name) else "stopped"
+
+    lines = [
+        f"config: {env_path}",
+        f"container: {service_name} ({container_status})",
+    ]
+    if data_dir.exists():
+        lines.append(f"data dir: {data_dir} ({format_size_gb(directory_size_bytes(data_dir))})")
+    else:
+        lines.append(f"data dir: {data_dir} (missing)")
     return lines
 
 
