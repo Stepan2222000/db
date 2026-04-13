@@ -62,6 +62,7 @@ def test_docker_exec_capture_builds_expected_command(
     def fake_run(command, cwd=None, capture_output=False, text=False, check=False):
         captured["command"] = command
         captured["cwd"] = cwd
+        captured["check"] = check
         return subprocess.CompletedProcess(command, 0, stdout="ok\n", stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -70,6 +71,7 @@ def test_docker_exec_capture_builds_expected_command(
         "db-test",
         ["sh", "-c", "echo ok"],
         project_root=Path("/tmp/project"),
+        check=False,
     )
 
     assert captured["command"] == [
@@ -81,6 +83,7 @@ def test_docker_exec_capture_builds_expected_command(
         "echo ok",
     ]
     assert captured["cwd"] == Path("/tmp/project")
+    assert captured["check"] is False
     assert result.stdout == "ok\n"
 
 
@@ -105,12 +108,14 @@ def test_docker_exec_popen_builds_expected_command(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         project_root=Path("/tmp/project"),
+        interactive=True,
     )
 
     assert isinstance(popen, FakePopen)
     assert captured["command"] == [
         "docker",
         "exec",
+        "-i",
         "db-test",
         "pg_dump",
         "-U",
@@ -151,3 +156,24 @@ def test_run_capture_raises_called_process_error_when_checking() -> None:
             [sys.executable, "-c", "import sys; sys.stderr.write('boom'); sys.exit(2)"],
             check=True,
         )
+
+
+def test_container_helpers_use_docker_inspect(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[list[str]] = []
+
+    def fake_run(command, cwd=None, capture_output=False, text=False, check=False):
+        seen.append(command)
+        if command[-1] == "exists":
+            return subprocess.CompletedProcess(command, 0, stdout='[{"State":{"Running":true}}]', stderr="")
+        if command[-1] == "missing":
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="not found")
+        return subprocess.CompletedProcess(command, 0, stdout='[{"State":{"Running":false}}]', stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert docker_core.container_exists("exists") is True
+    assert docker_core.container_exists("missing") is False
+    assert docker_core.container_is_running("exists") is True
+    assert docker_core.container_is_running("stopped") is False
+    assert docker_core.docker_inspect_json("stopped") == {"State": {"Running": False}}
+    assert ["docker", "inspect", "exists"] in seen
