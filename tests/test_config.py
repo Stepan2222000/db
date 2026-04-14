@@ -26,6 +26,12 @@ def test_load_global_config_defaults_version_to_18(tmp_path: Path) -> None:
     assert config.remote_user is None
     assert config.remote_password is None
     assert config.remote_backup_path is None
+    assert config.backup_enabled is None
+    assert config.backup_schedule is None
+    assert config.backup_format is None
+    assert config.backup_timeout_seconds is None
+    assert config.backup_max_days is None
+    assert config.backup_max_files is None
 
 
 def test_load_global_config_reads_remote_settings(tmp_path: Path) -> None:
@@ -50,6 +56,27 @@ def test_load_global_config_reads_remote_settings(tmp_path: Path) -> None:
     assert config.remote_backup_path == "/root/backups"
 
 
+def test_load_global_config_reads_backup_settings(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text(
+        "DB_BACKUP_ENABLED=1\n"
+        "DB_BACKUP_SCHEDULE=*/10 * * * *\n"
+        "DB_BACKUP_FORMAT=.sql\n"
+        "DB_BACKUP_TIMEOUT_SECONDS=120\n"
+        "DB_BACKUP_MAX_DAYS=30\n"
+        "DB_BACKUP_MAX_FILES=14\n",
+        encoding="utf-8",
+    )
+
+    config = load_global_config(tmp_path)
+
+    assert config.backup_enabled == "1"
+    assert config.backup_schedule == "*/10 * * * *"
+    assert config.backup_format == ".sql"
+    assert config.backup_timeout_seconds == 120
+    assert config.backup_max_days == 30
+    assert config.backup_max_files == 14
+
+
 def test_load_global_config_rejects_invalid_remote_port(tmp_path: Path) -> None:
     (tmp_path / ".env").write_text(
         "DB_REMOTE_PORT=invalid\n",
@@ -57,6 +84,22 @@ def test_load_global_config_rejects_invalid_remote_port(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="DB_REMOTE_PORT must be an integer"):
+        load_global_config(tmp_path)
+
+
+def test_load_global_config_rejects_invalid_backup_numeric_settings(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text(
+        "DB_BACKUP_TIMEOUT_SECONDS=invalid\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="DB_BACKUP_TIMEOUT_SECONDS must be an integer"):
+        load_global_config(tmp_path)
+
+    (tmp_path / ".env").write_text(
+        "DB_BACKUP_MAX_DAYS=0\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="DB_BACKUP_MAX_DAYS must be a positive integer"):
         load_global_config(tmp_path)
 
 

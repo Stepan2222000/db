@@ -138,15 +138,24 @@ def query_database_size(
         ) from exc
 
 
-def resolve_dump_format(service_config: ServiceConfig) -> str:
-    if service_config.backup_format is None:
+def resolve_dump_format(
+    service_config: ServiceConfig,
+    global_backup_format: str | None = None,
+) -> str:
+    raw_format = service_config.backup_format
+    if raw_format is None:
+        raw_format = global_backup_format
+    if raw_format is None:
         return ".sql.gz"
 
-    dump_format = service_config.backup_format.strip()
+    dump_format = raw_format.strip()
     if dump_format not in VALID_DUMP_FORMATS:
-        raise ValueError(
-            f"{service_config.env_path}: POSTGRES_BACKUP_FORMAT must be one of .sql, .sql.gz"
+        field_name = (
+            "POSTGRES_BACKUP_FORMAT"
+            if service_config.backup_format is not None
+            else "DB_BACKUP_FORMAT"
         )
+        raise ValueError(f"{field_name} must be one of .sql, .sql.gz")
     return dump_format
 
 

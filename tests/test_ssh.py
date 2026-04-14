@@ -238,6 +238,30 @@ def test_remote_session_upload_list_rename_remove_and_close() -> None:
     assert seen[-2:] == [("sftp_close", None), ("ssh_close", None)]
 
 
+def test_remote_session_set_timeout_uses_sftp_channel() -> None:
+    seen: list[tuple[str, float]] = []
+
+    class FakeChannel:
+        def settimeout(self, timeout_seconds: float) -> None:
+            seen.append(("settimeout", timeout_seconds))
+
+    class FakeSFTPClient:
+        def get_channel(self) -> FakeChannel:
+            return FakeChannel()
+
+        def close(self) -> None:
+            pass
+
+    class FakeSSHClient:
+        def close(self) -> None:
+            pass
+
+    session = ssh_core.RemoteSession(FakeSSHClient(), FakeSFTPClient())
+    session.set_timeout(45)
+
+    assert seen == [("settimeout", 45)]
+
+
 def test_remote_session_close_still_closes_ssh_after_sftp_error() -> None:
     seen: list[str] = []
 

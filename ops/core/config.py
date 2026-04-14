@@ -55,6 +55,21 @@ def load_global_config(project_root: Path) -> GlobalConfig:
         remote_user=_optional_str(values.get("DB_REMOTE_USER")),
         remote_password=_optional_str(values.get("DB_REMOTE_PASSWORD")),
         remote_backup_path=_optional_str(values.get("DB_REMOTE_BACKUP_PATH")),
+        backup_enabled=_optional_str(values.get("DB_BACKUP_ENABLED")),
+        backup_schedule=_optional_str(values.get("DB_BACKUP_SCHEDULE")),
+        backup_format=_optional_str(values.get("DB_BACKUP_FORMAT")),
+        backup_timeout_seconds=_parse_global_positive_int(
+            values.get("DB_BACKUP_TIMEOUT_SECONDS"),
+            "DB_BACKUP_TIMEOUT_SECONDS",
+        ),
+        backup_max_days=_parse_global_positive_int(
+            values.get("DB_BACKUP_MAX_DAYS"),
+            "DB_BACKUP_MAX_DAYS",
+        ),
+        backup_max_files=_parse_global_positive_int(
+            values.get("DB_BACKUP_MAX_FILES"),
+            "DB_BACKUP_MAX_FILES",
+        ),
     )
 
 
@@ -156,3 +171,22 @@ def _parse_optional_port(raw_value: str | None, *, default: int) -> int:
         raise ValueError("DB_REMOTE_PORT must be within 1..65535")
 
     return port
+
+
+def _parse_global_positive_int(raw_value: str | None, field_name: str) -> int | None:
+    if raw_value is None:
+        return None
+
+    value = raw_value.strip()
+    if not value:
+        return None
+
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be an integer") from exc
+
+    if parsed <= 0:
+        raise ValueError(f"{field_name} must be a positive integer")
+
+    return parsed

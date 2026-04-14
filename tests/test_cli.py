@@ -8,6 +8,7 @@ import pytest
 
 from ops.commands import add as add_command
 from ops.commands import apply as apply_command
+from ops.commands import backup as backup_command
 from ops.commands import dump as dump_command
 from ops.commands import remove as remove_command
 from ops.commands import sizes as sizes_command
@@ -18,7 +19,7 @@ from ops.operations import services as services_ops
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_COMMANDS = ("add", "remove", "apply", "backup", "dump", "restore", "sizes", "autobackup")
-STUB_COMMANDS = ("backup", "restore", "autobackup")
+STUB_COMMANDS = ("restore", "autobackup")
 
 
 def test_generate_compose_internal_api_smoke(tmp_path: Path) -> None:
@@ -582,6 +583,200 @@ def test_dump_removes_partial_file_on_writer_failure(
         dump_command.dump("demo")
 
     assert list((tmp_path / "dumps").glob("*")) == []
+
+
+def test_backup_fails_fast_when_runtime_critical_settings_are_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".env").write_text(
+        "DB_POSTGRES_VERSION=18\n"
+        "DB_REMOTE_HOST=2.26.53.128\n"
+        "DB_REMOTE_USER=root\n"
+        "DB_REMOTE_PASSWORD=secret\n"
+        "DB_REMOTE_BACKUP_PATH=/root/backups\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(ValueError, match="DB_BACKUP_TIMEOUT_SECONDS"):
+        backup_command.backup(None)
+
+    assert (tmp_path / "backup.log").exists()
+
+
+def test_backup_logs_when_no_services_are_selected(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".env").write_text(
+        "DB_POSTGRES_VERSION=18\n"
+        "DB_REMOTE_HOST=2.26.53.128\n"
+        "DB_REMOTE_USER=root\n"
+        "DB_REMOTE_PASSWORD=secret\n"
+        "DB_REMOTE_BACKUP_PATH=/root/backups\n"
+        "DB_BACKUP_TIMEOUT_SECONDS=60\n"
+        "DB_BACKUP_MAX_DAYS=30\n"
+        "DB_BACKUP_MAX_FILES=14\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(backup_command, "backup_candidates", lambda *args, **kwargs: [])
+
+    with caplog.at_level("INFO"):
+        backup_command.backup(None)
+
+    assert "No services selected for backup" in caplog.text
+    assert "No services selected for backup" in (tmp_path / "backup.log").read_text(encoding="utf-8")
+
+
+def test_backup_stopped_container_fails_whole_command_and_logs_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".env").write_text(
+        "DB_POSTGRES_VERSION=18\n"
+        "DB_REMOTE_HOST=2.26.53.128\n"
+        "DB_REMOTE_USER=root\n"
+        "DB_REMOTE_PASSWORD=secret\n"
+        "DB_REMOTE_BACKUP_PATH=/root/backups\n"
+        "DB_BACKUP_TIMEOUT_SECONDS=60\n"
+        "DB_BACKUP_MAX_DAYS=30\n"
+        "DB_BACKUP_MAX_FILES=14\n",
+        encoding="utf-8",
+    )
+
+    cfg = ServiceConfig(
+        name="demo",
+        env_path=tmp_path / "services" / ".env.demo",
+        postgres_user="admin",
+        postgres_password="secret",
+        postgres_port=5401,
+    )
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def set_timeout(self, timeout_seconds):
+            pass
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(backup_command, "backup_candidates", lambda *args, **kwargs: [cfg])
+    monkeypatch.setattr(backup_command, "open_remote_session", lambda *args, **kwargs: FakeSession())
+    monkeypatch.setattr(
+        backup_command,
+        "stream_backup_to_remote",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("demo: service container is not running")),
+    )
+
+    with pytest.raises(RuntimeError, match="service container is not running"):
+        backup_command.backup(None)
+
+    assert "Backup failed" in (tmp_path / "backup.log").read_text(encoding="utf-8")
+
+
+def test_backup_skips_disabled_named_service_as_noop(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    services_dir = tmp_path / "services"
+    services_dir.mkdir()
+    (tmp_path / ".env").write_text(
+        "DB_POSTGRES_VERSION=18\n"
+        "DB_REMOTE_HOST=2.26.53.128\n"
+        "DB_REMOTE_USER=root\n"
+        "DB_REMOTE_PASSWORD=secret\n"
+        "DB_REMOTE_BACKUP_PATH=/root/backups\n"
+        "DB_BACKUP_TIMEOUT_SECONDS=60\n"
+        "DB_BACKUP_MAX_DAYS=30\n"
+        "DB_BACKUP_MAX_FILES=14\n",
+        encoding="utf-8",
+    )
+    (services_dir / ".env.demo").write_text(
+        "POSTGRES_USER=admin\n"
+        "POSTGRES_PASSWORD=secret\n"
+        "POSTGRES_PORT=5401\n"
+        "POSTGRES_BACKUP_DISABLED=1\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(tmp_path)
+
+    with caplog.at_level("INFO"):
+        backup_command.backup("demo")
+
+    assert "No services selected for backup" in caplog.text
+
+
+def test_backup_success_logs_summary_and_rotation_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".env").write_text(
+        "DB_POSTGRES_VERSION=18\n"
+        "DB_REMOTE_HOST=2.26.53.128\n"
+        "DB_REMOTE_USER=root\n"
+        "DB_REMOTE_PASSWORD=secret\n"
+        "DB_REMOTE_BACKUP_PATH=/root/backups\n"
+        "DB_BACKUP_TIMEOUT_SECONDS=60\n"
+        "DB_BACKUP_MAX_DAYS=30\n"
+        "DB_BACKUP_MAX_FILES=14\n",
+        encoding="utf-8",
+    )
+
+    cfg = ServiceConfig(
+        name="demo",
+        env_path=tmp_path / "services" / ".env.demo",
+        postgres_user="admin",
+        postgres_password="secret",
+        postgres_port=5401,
+    )
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def set_timeout(self, timeout_seconds):
+            pass
+
+    result = backup_command.BackupResult(
+        service_name="demo",
+        remote_dir="/root/backups/host/demo",
+        filename="demo_2026-04-14_12-30.sql.gz",
+        dump_format=".sql.gz",
+        size_bytes=123,
+        tmp_cleaned_count=2,
+    )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(backup_command, "backup_candidates", lambda *args, **kwargs: [cfg])
+    monkeypatch.setattr(backup_command, "open_remote_session", lambda *args, **kwargs: FakeSession())
+    monkeypatch.setattr(backup_command, "stream_backup_to_remote", lambda *args, **kwargs: result)
+    monkeypatch.setattr(
+        backup_command,
+        "rotate_remote_backups",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("rotation failed")),
+    )
+
+    with caplog.at_level("INFO"):
+        backup_command.backup(None)
+
+    assert "demo: uploaded demo_2026-04-14_12-30.sql.gz" in caplog.text
+    assert "demo: rotation failed" in caplog.text
+    log_text = (tmp_path / "backup.log").read_text(encoding="utf-8")
+    assert "Backup finished: selected=1 uploaded=1 tmp_cleaned=2 rotation_warnings=1" in log_text
 
 
 def test_sizes_logs_when_no_services_found(

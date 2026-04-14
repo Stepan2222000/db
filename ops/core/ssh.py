@@ -83,6 +83,9 @@ class RemoteSession:
     def rename_file(self, src: str, dst: str) -> None:
         self._sftp_client.rename(src, dst)
 
+    def set_timeout(self, timeout_seconds: float) -> None:
+        self._sftp_client.get_channel().settimeout(timeout_seconds)
+
     def close(self) -> None:
         try:
             self._sftp_client.close()
