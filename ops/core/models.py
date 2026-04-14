@@ -19,6 +19,8 @@ class GlobalConfig:
     backup_timeout_seconds: int | None = None
     backup_max_days: int | None = None
     backup_max_files: int | None = None
+    metrics_enabled: str | None = None
+    metrics_interval_minutes: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

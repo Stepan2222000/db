@@ -32,6 +32,8 @@ def test_load_global_config_defaults_version_to_18(tmp_path: Path) -> None:
     assert config.backup_timeout_seconds is None
     assert config.backup_max_days is None
     assert config.backup_max_files is None
+    assert config.metrics_enabled is None
+    assert config.metrics_interval_minutes is None
 
 
 def test_load_global_config_reads_remote_settings(tmp_path: Path) -> None:
@@ -77,6 +79,19 @@ def test_load_global_config_reads_backup_settings(tmp_path: Path) -> None:
     assert config.backup_max_files == 14
 
 
+def test_load_global_config_reads_metrics_settings(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text(
+        "DB_METRICS_ENABLED=1\n"
+        "DB_METRICS_INTERVAL_MINUTES=5\n",
+        encoding="utf-8",
+    )
+
+    config = load_global_config(tmp_path)
+
+    assert config.metrics_enabled == "1"
+    assert config.metrics_interval_minutes == 5
+
+
 def test_load_global_config_rejects_invalid_remote_port(tmp_path: Path) -> None:
     (tmp_path / ".env").write_text(
         "DB_REMOTE_PORT=invalid\n",
@@ -100,6 +115,13 @@ def test_load_global_config_rejects_invalid_backup_numeric_settings(tmp_path: Pa
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="DB_BACKUP_MAX_DAYS must be a positive integer"):
+        load_global_config(tmp_path)
+
+    (tmp_path / ".env").write_text(
+        "DB_METRICS_INTERVAL_MINUTES=invalid\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="DB_METRICS_INTERVAL_MINUTES must be an integer"):
         load_global_config(tmp_path)
 
 

@@ -8,6 +8,7 @@ import pytest
 
 from ops.commands import add as add_command
 from ops.commands import apply as apply_command
+from ops.commands import autobackup as autobackup_command
 from ops.commands import backup as backup_command
 from ops.commands import dump as dump_command
 from ops.commands import remove as remove_command
@@ -21,7 +22,7 @@ from ops.operations import services as services_ops
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_COMMANDS = ("add", "remove", "apply", "backup", "dump", "restore", "sizes", "autobackup")
-STUB_COMMANDS = ("autobackup",)
+STUB_COMMANDS: tuple[str, ...] = ()
 
 
 def test_generate_compose_internal_api_smoke(tmp_path: Path) -> None:
@@ -71,6 +72,20 @@ def test_help_works_for_module_and_script_entrypoints(
     for command_name in PUBLIC_COMMANDS:
         assert command_name in result.stdout
     assert "generate-compose" not in result.stdout
+
+
+def test_autobackup_help_shows_subcommands() -> None:
+    result = subprocess.run(
+        [sys.executable, "-m", "ops.cli", "autobackup", "--help"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    for command_name in ("install", "uninstall", "status", "test", "logs"):
+        assert command_name in result.stdout
 
 
 @pytest.mark.parametrize("command_name", STUB_COMMANDS)
@@ -779,6 +794,105 @@ def test_backup_success_logs_summary_and_rotation_warning(
     assert "demo: rotation failed" in caplog.text
     log_text = (tmp_path / "backup.log").read_text(encoding="utf-8")
     assert "Backup finished: selected=1 uploaded=1 tmp_cleaned=2 rotation_warnings=1" in log_text
+
+
+def test_autobackup_install_logs_installed_state(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        autobackup_command,
+        "install_autobackup",
+        lambda project_root: (True, False),
+    )
+
+    with caplog.at_level("INFO"):
+        autobackup_command.install()
+
+    assert "Backup cron installed: yes" in caplog.text
+    assert "Metrics cron installed: no" in caplog.text
+
+
+def test_autobackup_uninstall_logs_removed_counts(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        autobackup_command,
+        "uninstall_autobackup",
+        lambda project_root: (1, 2),
+    )
+
+    with caplog.at_level("INFO"):
+        autobackup_command.uninstall()
+
+    assert "Removed backup cron jobs: 1" in caplog.text
+    assert "Removed metrics cron jobs: 2" in caplog.text
+
+
+def test_autobackup_status_logs_current_state(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        autobackup_command,
+        "build_autobackup_status",
+        lambda project_root: autobackup_command.AutobackupStatus(
+            backup_enabled=True,
+            backup_schedule="*/5 * * * *",
+            metrics_enabled=True,
+            metrics_interval_minutes=5,
+            backup_job_installed=True,
+            metrics_job_installed=False,
+            service_backup_flags=[("alpha", True), ("beta", False)],
+        ),
+    )
+
+    with caplog.at_level("INFO"):
+        autobackup_command.status()
+
+    assert "Backup enabled: yes" in caplog.text
+    assert "Metrics cron installed: no" in caplog.text
+    assert "service alpha: backup enabled" in caplog.text
+    assert "service beta: backup disabled" in caplog.text
+
+
+def test_autobackup_test_runs_backup_now(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    calls: list[str | None] = []
+    monkeypatch.setattr(autobackup_command, "backup_command", lambda name=None: calls.append(name))
+
+    autobackup_command.test()
+
+    assert calls == [None]
+
+
+def test_autobackup_logs_shows_tail_or_missing_file(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(autobackup_command, "read_backup_log_tail", lambda project_root: "")
+    with caplog.at_level("INFO"):
+        autobackup_command.logs()
+    assert "No backup log found" in caplog.text
+
+    caplog.clear()
+    monkeypatch.setattr(autobackup_command, "read_backup_log_tail", lambda project_root: "line 1\nline 2")
+    with caplog.at_level("INFO"):
+        autobackup_command.logs()
+    assert "line 1" in caplog.text
+    assert "line 2" in caplog.text
 
 
 def test_restore_path_mode_uses_sql_file_and_force_skips_confirmation(

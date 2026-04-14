@@ -12,7 +12,7 @@ import typer
 
 from ops.commands.add import add as add_command
 from ops.commands.apply import apply as apply_command
-from ops.commands.autobackup import autobackup as autobackup_command
+from ops.commands.autobackup import app as autobackup_app
 from ops.commands.backup import backup as backup_command
 from ops.commands.dump import dump as dump_command
 from ops.commands.remove import remove as remove_command
@@ -33,7 +33,7 @@ app.command()(backup_command)
 app.command()(dump_command)
 app.command()(restore_command)
 app.command()(sizes_command)
-app.command()(autobackup_command)
+app.add_typer(autobackup_app, name="autobackup")
 
 
 def generate_compose(project_root: Path) -> Path:

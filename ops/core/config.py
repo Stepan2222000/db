@@ -70,6 +70,11 @@ def load_global_config(project_root: Path) -> GlobalConfig:
             values.get("DB_BACKUP_MAX_FILES"),
             "DB_BACKUP_MAX_FILES",
         ),
+        metrics_enabled=_optional_str(values.get("DB_METRICS_ENABLED")),
+        metrics_interval_minutes=_parse_global_positive_int(
+            values.get("DB_METRICS_INTERVAL_MINUTES"),
+            "DB_METRICS_INTERVAL_MINUTES",
+        ),
     )
 
 
