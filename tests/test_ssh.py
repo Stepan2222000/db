@@ -262,6 +262,31 @@ def test_remote_session_set_timeout_uses_sftp_channel() -> None:
     assert seen == [("settimeout", 45)]
 
 
+def test_remote_session_download_file_uses_getfo() -> None:
+    seen: list[tuple[str, bytes]] = []
+
+    class FakeSFTPClient:
+        def getfo(self, remote_path: str, local_file) -> int:
+            local_file.write(b"downloaded")
+            seen.append((remote_path, b"downloaded"))
+            return 10
+
+        def close(self) -> None:
+            pass
+
+    class FakeSSHClient:
+        def close(self) -> None:
+            pass
+
+    session = ssh_core.RemoteSession(FakeSSHClient(), FakeSFTPClient())
+    handle = io.BytesIO()
+    written = session.download_file("/root/backups/file.sql.gz", handle)
+
+    assert written == 10
+    assert handle.getvalue() == b"downloaded"
+    assert seen == [("/root/backups/file.sql.gz", b"downloaded")]
+
+
 def test_remote_session_close_still_closes_ssh_after_sftp_error() -> None:
     seen: list[str] = []
 

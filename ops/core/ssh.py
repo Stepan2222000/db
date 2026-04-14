@@ -64,6 +64,9 @@ class RemoteSession:
             mtime_epoch=int(getattr(attrs, "st_mtime", 0) or 0),
         )
 
+    def download_file(self, remote_path: str, local_file: BinaryIO) -> int:
+        return int(self._sftp_client.getfo(remote_path, local_file))
+
     def list_dir(self, path: str) -> list[RemoteEntry]:
         return sorted(
             [
