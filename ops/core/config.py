@@ -45,9 +45,16 @@ def load_global_config(project_root: Path) -> GlobalConfig:
     if default_password is not None:
         default_password = default_password.strip()
 
+    remote_port = _parse_optional_port(values.get("DB_REMOTE_PORT"), default=22)
+
     return GlobalConfig(
         postgres_version=postgres_version,
         default_postgres_password=default_password,
+        remote_host=_optional_str(values.get("DB_REMOTE_HOST")),
+        remote_port=remote_port,
+        remote_user=_optional_str(values.get("DB_REMOTE_USER")),
+        remote_password=_optional_str(values.get("DB_REMOTE_PASSWORD")),
+        remote_backup_path=_optional_str(values.get("DB_REMOTE_BACKUP_PATH")),
     )
 
 
@@ -122,3 +129,30 @@ def _parse_positive_int(
         raise ValueError(f"{env_path}: {field_name} must be a positive integer")
 
     return value
+
+
+def _optional_str(raw_value: str | None) -> str | None:
+    if raw_value is None:
+        return None
+
+    value = raw_value.strip()
+    return value or None
+
+
+def _parse_optional_port(raw_value: str | None, *, default: int) -> int:
+    if raw_value is None:
+        return default
+
+    value = raw_value.strip()
+    if not value:
+        return default
+
+    try:
+        port = int(value)
+    except ValueError as exc:
+        raise ValueError("DB_REMOTE_PORT must be an integer") from exc
+
+    if not 1 <= port <= 65535:
+        raise ValueError("DB_REMOTE_PORT must be within 1..65535")
+
+    return port

@@ -21,6 +21,43 @@ def test_load_global_config_defaults_version_to_18(tmp_path: Path) -> None:
 
     assert config.postgres_version == "18"
     assert config.default_postgres_password == "secret"
+    assert config.remote_host is None
+    assert config.remote_port == 22
+    assert config.remote_user is None
+    assert config.remote_password is None
+    assert config.remote_backup_path is None
+
+
+def test_load_global_config_reads_remote_settings(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text(
+        "DB_POSTGRES_VERSION=17.6\n"
+        "DB_DEFAULT_POSTGRES_PASSWORD=secret\n"
+        "DB_REMOTE_HOST= 2.26.53.128 \n"
+        "DB_REMOTE_PORT= 2222 \n"
+        "DB_REMOTE_USER= root \n"
+        "DB_REMOTE_PASSWORD= pass \n"
+        "DB_REMOTE_BACKUP_PATH= /root/backups \n",
+        encoding="utf-8",
+    )
+
+    config = load_global_config(tmp_path)
+
+    assert config.postgres_version == "17.6"
+    assert config.remote_host == "2.26.53.128"
+    assert config.remote_port == 2222
+    assert config.remote_user == "root"
+    assert config.remote_password == "pass"
+    assert config.remote_backup_path == "/root/backups"
+
+
+def test_load_global_config_rejects_invalid_remote_port(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text(
+        "DB_REMOTE_PORT=invalid\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="DB_REMOTE_PORT must be an integer"):
+        load_global_config(tmp_path)
 
 
 def test_discover_services_returns_sorted_names(tmp_path: Path) -> None:

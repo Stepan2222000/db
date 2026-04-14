@@ -8,6 +8,11 @@ from pathlib import Path
 class GlobalConfig:
     postgres_version: str
     default_postgres_password: str | None
+    remote_host: str | None = None
+    remote_port: int = 22
+    remote_user: str | None = None
+    remote_password: str | None = None
+    remote_backup_path: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
