@@ -82,7 +82,11 @@ def test_summarize_apply_changes_reports_new_service_and_created_data_dir(
         postgres_port=5401,
     )
 
-    monkeypatch.setattr(services_ops, "container_exists", lambda name: False)
+    monkeypatch.setattr(
+        services_ops,
+        "container_snapshot",
+        lambda name: type("Snap", (), {"exists": False, "running": False, "inspect_payload": None})(),
+    )
 
     summary = services_ops.summarize_apply_changes(
         tmp_path,
@@ -114,28 +118,34 @@ def test_summarize_apply_changes_reports_runtime_differences(
         cpu_limit="1.50",
     )
 
-    monkeypatch.setattr(services_ops, "container_exists", lambda name: True)
-    monkeypatch.setattr(services_ops, "container_is_running", lambda name: False)
     monkeypatch.setattr(
         services_ops,
-        "docker_inspect_json",
-        lambda name: {
-            "Config": {
-                "Env": [
-                    "POSTGRES_USER=old_admin",
-                    "POSTGRES_PASSWORD=old_secret",
-                    "POSTGRES_MEMORY_LIMIT=256M",
-                    "POSTGRES_CPU_LIMIT=1.00",
-                ],
-                "Cmd": ["postgres", "-c", "max_connections=100"],
+        "container_snapshot",
+        lambda name: type(
+            "Snap",
+            (),
+            {
+                "exists": True,
+                "running": False,
+                "inspect_payload": {
+                    "Config": {
+                        "Env": [
+                            "POSTGRES_USER=old_admin",
+                            "POSTGRES_PASSWORD=old_secret",
+                            "POSTGRES_MEMORY_LIMIT=256M",
+                            "POSTGRES_CPU_LIMIT=1.00",
+                        ],
+                        "Cmd": ["postgres", "-c", "max_connections=100"],
+                    },
+                    "HostConfig": {
+                        "PortBindings": {
+                            "5432/tcp": [{"HostPort": "5401"}],
+                        }
+                    },
+                    "State": {"Running": False},
+                },
             },
-            "HostConfig": {
-                "PortBindings": {
-                    "5432/tcp": [{"HostPort": "5401"}],
-                }
-            },
-            "State": {"Running": False},
-        },
+        )(),
     )
 
     summary = services_ops.summarize_apply_changes(
@@ -171,8 +181,11 @@ def test_summarize_remove_target_reports_running_and_missing_data_dir(
     env_path.parent.mkdir(parents=True)
     env_path.write_text("POSTGRES_USER=admin\n", encoding="utf-8")
 
-    monkeypatch.setattr(services_ops, "container_exists", lambda name: True)
-    monkeypatch.setattr(services_ops, "container_is_running", lambda name: True)
+    monkeypatch.setattr(
+        services_ops,
+        "container_snapshot",
+        lambda name: type("Snap", (), {"exists": True, "running": True, "inspect_payload": {}})(),
+    )
 
     summary = services_ops.summarize_remove_target(tmp_path, "demo")
 
@@ -192,10 +205,14 @@ def test_summarize_remove_target_reports_stopped_container_and_data_dir_size(
     env_path.write_text("POSTGRES_USER=admin\n", encoding="utf-8")
     data_dir = tmp_path / "data" / "demo"
     data_dir.mkdir(parents=True)
-    (data_dir / "base.dat").write_bytes(b"x" * (1024 ** 3))
+    (data_dir / "base.dat").write_bytes(b"x")
 
-    monkeypatch.setattr(services_ops, "container_exists", lambda name: True)
-    monkeypatch.setattr(services_ops, "container_is_running", lambda name: False)
+    monkeypatch.setattr(
+        services_ops,
+        "container_snapshot",
+        lambda name: type("Snap", (), {"exists": True, "running": False, "inspect_payload": {}})(),
+    )
+    monkeypatch.setattr(services_ops, "directory_size_bytes", lambda path: 1024 ** 3)
 
     summary = services_ops.summarize_remove_target(tmp_path, "demo")
 

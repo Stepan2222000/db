@@ -11,6 +11,7 @@ from ops.operations.postgres import wait_for_pg_ready
 from ops.operations.services import (
     create_service_env,
     ensure_service_data_dir,
+    generate_compose,
     load_all_service_configs,
     resolve_add_password,
     pick_service_port,
@@ -36,8 +37,6 @@ def add(
 
     create_service_env(project_root, name, resolved_password, resolved_port)
     ensure_service_data_dir(project_root, name)
-
-    from ops.cli import generate_compose
 
     generate_compose(project_root)
 

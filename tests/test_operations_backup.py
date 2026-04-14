@@ -46,7 +46,6 @@ def test_build_backup_runtime_config_success(tmp_path: Path) -> None:
         timeout_seconds=60,
         max_days=30,
         max_files=14,
-        log_path=tmp_path / "backup.log",
     )
 
 
@@ -218,7 +217,7 @@ def test_stream_backup_to_remote_fails_for_stopped_container(
         pass
 
     with pytest.MonkeyPatch.context() as monkeypatch:
-        monkeypatch.setattr(backup_ops, "container_exists", lambda name: False)
+        monkeypatch.setattr(backup_ops, "container_is_running", lambda name: False)
         with pytest.raises(RuntimeError, match="service container is not running"):
             backup_ops.stream_backup_to_remote(
                 FakeSession(),
@@ -282,13 +281,12 @@ def test_stream_backup_to_remote_removes_tmp_on_process_failures(
         def kill(self) -> None:
             pass
 
-    monkeypatch.setattr(backup_ops, "container_exists", lambda name: True)
     monkeypatch.setattr(backup_ops, "container_is_running", lambda name: True)
 
     monkeypatch.setattr(
         backup_ops,
-        "pg_dump_popen",
-        lambda *args, **kwargs: FakeProcess(1, "boom"),
+        "stream_pg_dump_to_consumer",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("demo: pg_dump failed: boom")),
     )
     monkeypatch.setattr(
         backup_ops,
@@ -360,12 +358,11 @@ def test_stream_backup_to_remote_replaces_existing_final_file(
         def kill(self) -> None:
             pass
 
-    monkeypatch.setattr(backup_ops, "container_exists", lambda name: True)
     monkeypatch.setattr(backup_ops, "container_is_running", lambda name: True)
     monkeypatch.setattr(
         backup_ops,
-        "pg_dump_popen",
-        lambda *args, **kwargs: FakeProcess(),
+        "stream_pg_dump_to_consumer",
+        lambda *args, **kwargs: backup_ops.RemoteEntry("demo.sql.tmp", 10, 1),
     )
     monkeypatch.setattr(
         backup_ops,

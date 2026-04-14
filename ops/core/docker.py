@@ -14,6 +14,13 @@ class CommandResult:
     returncode: int
 
 
+@dataclass(frozen=True, slots=True)
+class ContainerSnapshot:
+    exists: bool
+    running: bool
+    inspect_payload: dict[str, object] | None
+
+
 def compose_up(project_root: Path, service: str | None = None) -> CommandResult:
     command = ["docker", "compose", "up", "-d"]
     if service is not None:
@@ -87,37 +94,43 @@ def docker_stats_no_stream(target: str | None = None) -> CommandResult:
 
 
 def docker_inspect_json(container_name: str) -> dict[str, object]:
+    snapshot = container_snapshot(container_name)
+    if not snapshot.exists:
+        raise subprocess.CalledProcessError(
+            1,
+            ["docker", "inspect", container_name],
+            output="",
+            stderr="container not found",
+        )
+    assert snapshot.inspect_payload is not None
+    return snapshot.inspect_payload
+
+
+def container_snapshot(container_name: str) -> ContainerSnapshot:
     result = _run_capture(
         ["docker", "inspect", container_name],
         check=False,
     )
     if result.returncode != 0:
-        raise subprocess.CalledProcessError(
-            result.returncode,
-            ["docker", "inspect", container_name],
-            output=result.stdout,
-            stderr=result.stderr,
-        )
+        return ContainerSnapshot(exists=False, running=False, inspect_payload=None)
 
     payload = json.loads(result.stdout)
     if not payload:
         raise ValueError(f"docker inspect returned no payload for {container_name}")
-    return payload[0]
+    inspect_payload = payload[0]
+    return ContainerSnapshot(
+        exists=True,
+        running=bool(inspect_payload.get("State", {}).get("Running")),
+        inspect_payload=inspect_payload,
+    )
 
 
 def container_exists(container_name: str) -> bool:
-    result = _run_capture(
-        ["docker", "inspect", container_name],
-        check=False,
-    )
-    return result.returncode == 0
+    return container_snapshot(container_name).exists
 
 
 def container_is_running(container_name: str) -> bool:
-    if not container_exists(container_name):
-        return False
-    inspect_payload = docker_inspect_json(container_name)
-    return bool(inspect_payload.get("State", {}).get("Running"))
+    return container_snapshot(container_name).running
 
 
 def _run_capture(

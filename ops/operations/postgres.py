@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import contextlib
 import math
 import subprocess
 import time
-from typing import BinaryIO
+from typing import BinaryIO, Callable, TypeVar
 
 from ops.core.docker import docker_exec_capture, docker_exec_popen
-from ops.core.models import ServiceConfig
+from ops.core.models import ServiceConfig, VALID_BACKUP_FORMATS
 
-VALID_DUMP_FORMATS = frozenset({".sql", ".sql.gz"})
+T = TypeVar("T")
 
 
 def wait_for_pg_ready(
@@ -52,29 +53,26 @@ def run_psql(
     tuples_only: bool = False,
     no_align: bool = False,
 ) -> subprocess.CompletedProcess[str]:
-    command = [
-        "psql",
-        "-v",
-        "ON_ERROR_STOP=1",
-        "--username",
+    command = build_psql_argv(
         postgres_user,
-        "--dbname",
         database,
-    ]
-    if tuples_only:
-        command.append("--tuples-only")
-    if no_align:
-        command.append("--no-align")
+        tuples_only=tuples_only,
+        no_align=no_align,
+    )
     if not stdin_sql:
         command.extend(["-c", sql])
 
-    process = docker_exec_popen(
+    process = psql_popen(
         container_name,
-        command,
+        postgres_user,
+        database,
         stdin=subprocess.PIPE if stdin_sql else None,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         interactive=stdin_sql,
+        tuples_only=tuples_only,
+        no_align=no_align,
+        extra_argv=[] if stdin_sql else ["-c", sql],
     )
     stdout_bytes, stderr_bytes = process.communicate(
         sql.encode("utf-8") if stdin_sql else None
@@ -149,7 +147,7 @@ def resolve_dump_format(
         return ".sql.gz"
 
     dump_format = raw_format.strip()
-    if dump_format not in VALID_DUMP_FORMATS:
+    if dump_format not in VALID_BACKUP_FORMATS:
         field_name = (
             "POSTGRES_BACKUP_FORMAT"
             if service_config.backup_format is not None
@@ -186,6 +184,152 @@ def pg_dump_popen(
         stdout=stdout,
         stderr=stderr,
     )
+
+
+def build_psql_argv(
+    postgres_user: str,
+    database: str,
+    *,
+    tuples_only: bool = False,
+    no_align: bool = False,
+    extra_argv: list[str] | None = None,
+) -> list[str]:
+    command = [
+        "psql",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "--username",
+        postgres_user,
+        "--dbname",
+        database,
+    ]
+    if tuples_only:
+        command.append("--tuples-only")
+    if no_align:
+        command.append("--no-align")
+    if extra_argv:
+        command.extend(extra_argv)
+    return command
+
+
+def psql_popen(
+    container_name: str,
+    postgres_user: str,
+    database: str,
+    *,
+    stdin: int | BinaryIO | None,
+    stdout: int | BinaryIO | None,
+    stderr: int | BinaryIO | None,
+    interactive: bool,
+    tuples_only: bool = False,
+    no_align: bool = False,
+    extra_argv: list[str] | None = None,
+) -> subprocess.Popen[bytes]:
+    return docker_exec_popen(
+        container_name,
+        build_psql_argv(
+            postgres_user,
+            database,
+            tuples_only=tuples_only,
+            no_align=no_align,
+            extra_argv=extra_argv,
+        ),
+        stdin=stdin,
+        stdout=stdout,
+        stderr=stderr,
+        interactive=interactive,
+    )
+
+
+def stream_pg_dump_to_consumer(
+    container_name: str,
+    service_config: ServiceConfig,
+    dump_format: str,
+    consumer: Callable[[BinaryIO], T],
+    *,
+    timeout_seconds: float | None = None,
+) -> T:
+    if dump_format == ".sql":
+        dump_process = pg_dump_popen(
+            container_name,
+            service_config,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        assert dump_process.stdout is not None
+        try:
+            result = consumer(dump_process.stdout)
+            dump_process.stdout.close()
+            dump_returncode = dump_process.wait(timeout=timeout_seconds)
+            dump_stderr = (
+                dump_process.stderr.read().decode("utf-8", "replace")
+                if dump_process.stderr is not None
+                else ""
+            )
+        except Exception:
+            _terminate_process(dump_process)
+            raise
+        finally:
+            if dump_process.stdout is not None:
+                dump_process.stdout.close()
+
+        if dump_returncode != 0:
+            raise RuntimeError(f"{container_name}: pg_dump failed: {dump_stderr}")
+        return result
+
+    if dump_format == ".sql.gz":
+        dump_process = pg_dump_popen(
+            container_name,
+            service_config,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        assert dump_process.stdout is not None
+        gzip_process = subprocess.Popen(
+            ["gzip", "-c"],
+            stdin=dump_process.stdout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        assert gzip_process.stdout is not None
+        dump_process.stdout.close()
+        try:
+            result = consumer(gzip_process.stdout)
+            gzip_process.stdout.close()
+            gzip_returncode = gzip_process.wait(timeout=timeout_seconds)
+            dump_returncode = dump_process.wait(timeout=timeout_seconds)
+            gzip_stderr = (
+                gzip_process.stderr.read().decode("utf-8", "replace")
+                if gzip_process.stderr is not None
+                else ""
+            )
+            dump_stderr = (
+                dump_process.stderr.read().decode("utf-8", "replace")
+                if dump_process.stderr is not None
+                else ""
+            )
+        except Exception:
+            _terminate_process(gzip_process)
+            _terminate_process(dump_process)
+            raise
+        finally:
+            if gzip_process.stdout is not None:
+                gzip_process.stdout.close()
+
+        if dump_returncode != 0:
+            raise RuntimeError(f"{container_name}: pg_dump failed: {dump_stderr}")
+        if gzip_returncode != 0:
+            raise RuntimeError(f"{container_name}: gzip failed: {gzip_stderr}")
+        return result
+
+    raise ValueError(f"Unsupported dump format: {dump_format}")
+
+
+def _terminate_process(process: subprocess.Popen[bytes]) -> None:
+    with contextlib.suppress(OSError, ProcessLookupError):
+        process.kill()
+    with contextlib.suppress(Exception):
+        process.wait(timeout=5)
 
 
 def format_size_gb(size_bytes: int) -> str:

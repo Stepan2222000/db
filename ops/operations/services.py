@@ -5,10 +5,10 @@ from difflib import unified_diff
 from pathlib import Path
 from typing import Iterable
 
-from ops.core.compose import write_empty_compose
-from ops.core.config import load_service_config, service_env_path
+from ops.core.compose import build_compose, write_compose, write_empty_compose
+from ops.core.config import load_global_config, load_service_config, service_env_path
 from ops.core.discovery import discover_services
-from ops.core.docker import container_exists, container_is_running, docker_inspect_json
+from ops.core.docker import container_is_running, container_snapshot
 from ops.core.env_files import write_env_file
 from ops.core.models import GlobalConfig, ServiceConfig
 from ops.operations.postgres import format_size_gb
@@ -79,9 +79,20 @@ def load_all_service_configs(project_root: Path) -> list[ServiceConfig]:
     ]
 
 
-def regenerate_compose_with_previous_state(project_root: Path) -> tuple[Path, str | None]:
-    from ops.cli import generate_compose
+def generate_compose(project_root: Path) -> Path:
+    global_config = load_global_config(project_root)
+    service_configs = load_all_service_configs(project_root)
+    if not service_configs:
+        raise ValueError(
+            f"{project_root / 'services'}: no service configuration files found"
+        )
+    return write_compose(
+        project_root,
+        build_compose(project_root, global_config, service_configs),
+    )
 
+
+def regenerate_compose_with_previous_state(project_root: Path) -> tuple[Path, str | None]:
     compose_path = project_root / "compose.yaml"
     previous_text = None
     if compose_path.exists():
@@ -91,8 +102,6 @@ def regenerate_compose_with_previous_state(project_root: Path) -> tuple[Path, st
 
 
 def regenerate_compose_for_current_services(project_root: Path) -> Path:
-    from ops.cli import generate_compose
-
     if discover_services(project_root):
         return generate_compose(project_root)
     return write_empty_compose(project_root)
@@ -151,9 +160,8 @@ def summarize_remove_target(
 ) -> list[str]:
     env_path = service_env_path(project_root, service_name)
     data_dir = project_root / "data" / service_name
-    container_status = "missing"
-    if container_exists(service_name):
-        container_status = "running" if container_is_running(service_name) else "stopped"
+    snapshot = container_snapshot(service_name)
+    container_status = "running" if snapshot.running else "stopped" if snapshot.exists else "missing"
 
     lines = [
         f"config: {env_path}",
@@ -170,20 +178,19 @@ def _summarize_service(
     service_config: ServiceConfig,
     created_data_dirs: set[str],
 ) -> list[str]:
-    container_name = service_config.name
-    if not container_exists(container_name):
+    snapshot = container_snapshot(service_config.name)
+    if not snapshot.exists:
         summary = [f"service {service_config.name}: will be created"]
         if service_config.name in created_data_dirs:
             summary.append("data dir: created")
         return summary
 
-    inspect_payload = docker_inspect_json(container_name)
-    running = container_is_running(container_name)
+    assert snapshot.inspect_payload is not None
     summary = [
-        f"service {service_config.name}: {'running' if running else 'stopped'}"
+        f"service {service_config.name}: {'running' if snapshot.running else 'stopped'}"
     ]
 
-    env_map = _env_map(inspect_payload)
+    env_map = _env_map(snapshot.inspect_payload)
     current_user = env_map.get("POSTGRES_USER")
     current_password = env_map.get("POSTGRES_PASSWORD")
     current_memory_limit = env_map.get("POSTGRES_MEMORY_LIMIT")
@@ -194,11 +201,11 @@ def _summarize_service(
     if current_password != service_config.postgres_password:
         summary.append("password: changed")
 
-    current_port = _current_host_port(inspect_payload)
+    current_port = _current_host_port(snapshot.inspect_payload)
     if current_port != str(service_config.postgres_port):
         summary.append(f"port: {current_port or 'none'} -> {service_config.postgres_port}")
 
-    current_max_connections = _current_max_connections(inspect_payload)
+    current_max_connections = _current_max_connections(snapshot.inspect_payload)
     desired_max_connections = (
         str(service_config.max_connections)
         if service_config.max_connections is not None

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import typer
 
-from ops.core.docker import container_exists, container_is_running, compose_up
+from ops.core.docker import container_is_running, compose_up
 from ops.operations.postgres import sync_service_password, wait_for_pg_ready
 from ops.operations.services import (
     compose_diff_lines,
@@ -62,8 +62,6 @@ def apply() -> None:
     compose_up(project_root)
 
     for service_config in desired_service_configs:
-        if not container_exists(service_config.name):
-            continue
         if not container_is_running(service_config.name):
             continue
         wait_for_pg_ready(

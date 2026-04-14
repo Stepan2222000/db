@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 
 from ops.core.env_files import read_env_file
-from ops.core.models import GlobalConfig, ServiceConfig
+from ops.core.models import GlobalConfig, ServiceConfig, VALID_BACKUP_FORMATS
 
 SERVICE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_]+$")
 
@@ -55,9 +55,9 @@ def load_global_config(project_root: Path) -> GlobalConfig:
         remote_user=_optional_str(values.get("DB_REMOTE_USER")),
         remote_password=_optional_str(values.get("DB_REMOTE_PASSWORD")),
         remote_backup_path=_optional_str(values.get("DB_REMOTE_BACKUP_PATH")),
-        backup_enabled=_optional_str(values.get("DB_BACKUP_ENABLED")),
+        backup_enabled=_parse_boolish_flag(values.get("DB_BACKUP_ENABLED")),
         backup_schedule=_optional_str(values.get("DB_BACKUP_SCHEDULE")),
-        backup_format=_optional_str(values.get("DB_BACKUP_FORMAT")),
+        backup_format=_parse_backup_format(values.get("DB_BACKUP_FORMAT"), "DB_BACKUP_FORMAT"),
         backup_timeout_seconds=_parse_global_positive_int(
             values.get("DB_BACKUP_TIMEOUT_SECONDS"),
             "DB_BACKUP_TIMEOUT_SECONDS",
@@ -70,7 +70,7 @@ def load_global_config(project_root: Path) -> GlobalConfig:
             values.get("DB_BACKUP_MAX_FILES"),
             "DB_BACKUP_MAX_FILES",
         ),
-        metrics_enabled=_optional_str(values.get("DB_METRICS_ENABLED")),
+        metrics_enabled=_parse_boolish_flag(values.get("DB_METRICS_ENABLED")),
         metrics_interval_minutes=_parse_global_positive_int(
             values.get("DB_METRICS_INTERVAL_MINUTES"),
             "DB_METRICS_INTERVAL_MINUTES",
@@ -113,8 +113,11 @@ def load_service_config(project_root: Path, service_name: str) -> ServiceConfig:
         postgres_password=postgres_password,
         postgres_port=postgres_port,
         max_connections=max_connections,
-        backup_disabled=values.get("POSTGRES_BACKUP_DISABLED"),
-        backup_format=values.get("POSTGRES_BACKUP_FORMAT"),
+        backup_disabled=_parse_boolish_flag(values.get("POSTGRES_BACKUP_DISABLED")),
+        backup_format=_parse_backup_format(
+            values.get("POSTGRES_BACKUP_FORMAT"),
+            "POSTGRES_BACKUP_FORMAT",
+        ),
         memory_limit=values.get("POSTGRES_MEMORY_LIMIT"),
         cpu_limit=values.get("POSTGRES_CPU_LIMIT"),
     )
@@ -195,3 +198,18 @@ def _parse_global_positive_int(raw_value: str | None, field_name: str) -> int | 
         raise ValueError(f"{field_name} must be a positive integer")
 
     return parsed
+
+
+def _parse_boolish_flag(raw_value: str | None) -> bool:
+    if raw_value is None:
+        return False
+    return raw_value.strip() not in {"", "0", "false", "False", "no", "No"}
+
+
+def _parse_backup_format(raw_value: str | None, field_name: str) -> str | None:
+    value = _optional_str(raw_value)
+    if value is None:
+        return None
+    if value not in VALID_BACKUP_FORMATS:
+        raise ValueError(f"{field_name} must be one of .sql, .sql.gz")
+    return value

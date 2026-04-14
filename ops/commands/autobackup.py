@@ -11,7 +11,6 @@ from ops.operations.autobackup import (
     build_autobackup_status,
     install_autobackup,
     read_backup_log_tail,
-    run_metrics_now,
     uninstall_autobackup,
 )
 

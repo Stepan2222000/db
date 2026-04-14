@@ -8,10 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from ops.core.docker import docker_exec_popen
 from ops.core.ssh import RemoteSession
 from ops.operations.backup import remote_backup_dir
-from ops.operations.postgres import query_database_size, run_psql, sql_identifier, sql_literal
+from ops.operations.postgres import psql_popen, run_psql, sql_identifier, sql_literal
 
 VALID_RESTORE_SUFFIXES = (".sql", ".sql.gz")
 
@@ -24,7 +23,6 @@ class RestoreSource:
     remote_path: str | None
     size_bytes: int
     mtime_epoch: int
-    is_temporary_local_copy: bool
 
 
 def validate_restore_extension(path_or_name: str | Path) -> str:
@@ -60,7 +58,6 @@ def list_local_restore_sources(project_root: Path, service_name: str) -> list[Re
                 remote_path=None,
                 size_bytes=stat.st_size,
                 mtime_epoch=int(stat.st_mtime),
-                is_temporary_local_copy=False,
             )
         )
     return sources
@@ -88,7 +85,6 @@ def list_remote_restore_sources(
             remote_path=f"{remote_dir}/{entry.filename}",
             size_bytes=entry.size_bytes,
             mtime_epoch=entry.mtime_epoch,
-            is_temporary_local_copy=False,
         )
         for entry in entries
         if entry.filename.endswith(VALID_RESTORE_SUFFIXES)
@@ -123,12 +119,7 @@ def restore_source_from_path(path: Path) -> RestoreSource:
         remote_path=None,
         size_bytes=stat.st_size,
         mtime_epoch=int(stat.st_mtime),
-        is_temporary_local_copy=False,
     )
-
-
-def current_database_size(container_name: str, service_config) -> int:
-    return query_database_size(container_name, service_config)
 
 
 def terminate_service_connections(
@@ -162,21 +153,15 @@ def restore_sql_file(
     local_sql_path: Path,
 ) -> None:
     with local_sql_path.open("rb") as handle:
-        process = docker_exec_popen(
+        process = psql_popen(
             container_name,
-            [
-                "psql",
-                "-v",
-                "ON_ERROR_STOP=1",
-                "--username",
-                postgres_user,
-                "--dbname",
-                database_name,
-            ],
+            postgres_user,
+            database_name,
             stdin=handle,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             interactive=True,
+            extra_argv=[],
         )
         _, stderr = process.communicate()
     if process.returncode != 0:
@@ -199,21 +184,15 @@ def restore_gzip_file(
         stderr=subprocess.PIPE,
     )
     assert gunzip_process.stdout is not None
-    psql_process = docker_exec_popen(
+    psql_process = psql_popen(
         container_name,
-        [
-            "psql",
-            "-v",
-            "ON_ERROR_STOP=1",
-            "--username",
-            postgres_user,
-            "--dbname",
-            database_name,
-        ],
+        postgres_user,
+        database_name,
         stdin=gunzip_process.stdout,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         interactive=True,
+        extra_argv=[],
     )
     gunzip_process.stdout.close()
     _, psql_stderr = psql_process.communicate()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import deque
 import shlex
 import sqlite3
 import time
@@ -10,9 +11,7 @@ from pathlib import Path
 from crontab import CronItem, CronSlices, CronTab
 
 from ops.core.config import load_global_config
-from ops.core.docker import container_exists, container_is_running, docker_stats_no_stream
-from ops.core.models import ServiceConfig
-from ops.operations.backup import is_backup_disabled
+from ops.core.docker import docker_stats_no_stream
 from ops.operations.services import load_all_service_configs
 
 BACKUP_CRON_COMMENT = "db-backup"
@@ -40,44 +39,34 @@ class MetricsSample:
     net_io: str
     block_io: str
     pids: str
-
-
-def is_enabled_flag(value: str | None) -> bool:
-    return value is not None and value.strip() not in {"", "0", "false", "False", "no", "No"}
-
-
 def build_backup_cron_command(project_root: Path) -> str:
-    python_path = project_root / ".venv" / "bin" / "python"
     log_path = project_root / "backup.log"
+    command = _build_project_python_command(project_root, "ops/cli.py backup")
     return (
-        f"cd {shlex.quote(str(project_root))} && "
-        f"{shlex.quote(str(python_path))} ops/cli.py backup >> {shlex.quote(str(log_path))} 2>&1"
+        f"{command} >> {shlex.quote(str(log_path))} 2>&1"
     )
 
 
 def build_metrics_cron_command(project_root: Path) -> str:
-    python_path = project_root / ".venv" / "bin" / "python"
     code = (
         "from pathlib import Path; "
         "from ops.operations.autobackup import run_metrics_now; "
         "run_metrics_now(Path.cwd())"
     )
-    return (
-        f"cd {shlex.quote(str(project_root))} && "
-        f"{shlex.quote(str(python_path))} -c {shlex.quote(code)}"
-    )
+    return _build_project_python_command(project_root, f"-c {shlex.quote(code)}")
 
 
 def load_user_crontab() -> CronTab:
     return CronTab(user=True)
 
 
-def find_backup_job(cron: CronTab, project_root: Path) -> CronItem | None:
-    return next(iter(cron.find_comment(BACKUP_CRON_COMMENT)), None)
+def find_job(cron: CronTab, comment: str) -> CronItem | None:
+    return next(iter(cron.find_comment(comment)), None)
 
 
-def find_metrics_job(cron: CronTab, project_root: Path) -> CronItem | None:
-    return next(iter(cron.find_comment(METRICS_CRON_COMMENT)), None)
+def _build_project_python_command(project_root: Path, command: str) -> str:
+    python_path = project_root / ".venv" / "bin" / "python"
+    return f"cd {shlex.quote(str(project_root))} && {shlex.quote(str(python_path))} {command}"
 
 
 def install_autobackup(project_root: Path) -> tuple[bool, bool]:
@@ -85,7 +74,7 @@ def install_autobackup(project_root: Path) -> tuple[bool, bool]:
     cron = load_user_crontab()
 
     backup_installed = False
-    if is_enabled_flag(global_config.backup_enabled):
+    if global_config.backup_enabled:
         if not global_config.backup_schedule:
             raise ValueError("DB_BACKUP_SCHEDULE is required when backup is enabled")
         if not CronSlices.is_valid(global_config.backup_schedule):
@@ -98,7 +87,7 @@ def install_autobackup(project_root: Path) -> tuple[bool, bool]:
         cron.remove_all(comment=BACKUP_CRON_COMMENT)
 
     metrics_installed = False
-    if is_enabled_flag(global_config.metrics_enabled):
+    if global_config.metrics_enabled:
         if global_config.metrics_interval_minutes is None:
             raise ValueError("DB_METRICS_INTERVAL_MINUTES is required when metrics are enabled")
         if not 1 <= global_config.metrics_interval_minutes <= 59:
@@ -126,16 +115,16 @@ def build_autobackup_status(project_root: Path) -> AutobackupStatus:
     global_config = load_global_config(project_root)
     cron = load_user_crontab()
     service_flags = [
-        (service_config.name, not is_backup_disabled(service_config))
+        (service_config.name, not service_config.backup_disabled)
         for service_config in load_all_service_configs(project_root)
     ]
     return AutobackupStatus(
-        backup_enabled=is_enabled_flag(global_config.backup_enabled),
+        backup_enabled=global_config.backup_enabled,
         backup_schedule=global_config.backup_schedule,
-        metrics_enabled=is_enabled_flag(global_config.metrics_enabled),
+        metrics_enabled=global_config.metrics_enabled,
         metrics_interval_minutes=global_config.metrics_interval_minutes,
-        backup_job_installed=find_backup_job(cron, project_root) is not None,
-        metrics_job_installed=find_metrics_job(cron, project_root) is not None,
+        backup_job_installed=find_job(cron, BACKUP_CRON_COMMENT) is not None,
+        metrics_job_installed=find_job(cron, METRICS_CRON_COMMENT) is not None,
         service_backup_flags=service_flags,
     )
 
@@ -143,11 +132,13 @@ def build_autobackup_status(project_root: Path) -> AutobackupStatus:
 def collect_metrics_samples(project_root: Path) -> list[MetricsSample]:
     samples: list[MetricsSample] = []
     timestamp = int(time.time())
-    for service_config in load_all_service_configs(project_root):
-        if not container_exists(service_config.name) or not container_is_running(service_config.name):
+    service_names = {service_config.name for service_config in load_all_service_configs(project_root)}
+    for raw_line in docker_stats_no_stream().stdout.splitlines():
+        if not raw_line.strip():
             continue
-        stats_result = docker_stats_no_stream(service_config.name)
-        payload = json.loads(stats_result.stdout.strip())
+        payload = json.loads(raw_line)
+        if payload["Name"] not in service_names:
+            continue
         samples.append(
             MetricsSample(
                 ts_epoch=timestamp,
@@ -225,5 +216,5 @@ def read_backup_log_tail(project_root: Path, lines: int = 50) -> str:
     log_path = project_root / "backup.log"
     if not log_path.exists():
         return ""
-    content = log_path.read_text(encoding="utf-8").splitlines()
-    return "\n".join(content[-lines:])
+    with log_path.open("r", encoding="utf-8") as handle:
+        return "\n".join(deque((line.rstrip("\n") for line in handle), maxlen=lines))

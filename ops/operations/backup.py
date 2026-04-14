@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
-import subprocess
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -15,10 +14,10 @@ import logging
 
 from ops.core.config import load_service_config
 from ops.core.discovery import discover_services
-from ops.core.docker import container_exists, container_is_running
+from ops.core.docker import container_is_running
 from ops.core.models import GlobalConfig, ServiceConfig
 from ops.core.ssh import RemoteEntry, RemoteSession
-from ops.operations.postgres import pg_dump_popen, resolve_dump_format
+from ops.operations.postgres import resolve_dump_format, stream_pg_dump_to_consumer
 
 VALID_REMOTE_BACKUP_SUFFIXES = (".sql", ".sql.gz")
 
@@ -28,7 +27,6 @@ class BackupRuntimeConfig:
     timeout_seconds: int
     max_days: int
     max_files: int
-    log_path: Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,14 +63,13 @@ def build_backup_runtime_config(
         timeout_seconds=global_config.backup_timeout_seconds,
         max_days=global_config.backup_max_days,
         max_files=global_config.backup_max_files,
-        log_path=project_root / "backup.log",
     )
 
 
 def backup_candidates(project_root: Path, selected_name: str | None) -> list[ServiceConfig]:
     if selected_name is not None:
         service_config = load_service_config(project_root, selected_name)
-        return [] if is_backup_disabled(service_config) else [service_config]
+        return [] if service_config.backup_disabled else [service_config]
 
     return [
         service_config
@@ -80,13 +77,8 @@ def backup_candidates(project_root: Path, selected_name: str | None) -> list[Ser
             load_service_config(project_root, service_name)
             for service_name in discover_services(project_root)
         )
-        if not is_backup_disabled(service_config)
+        if not service_config.backup_disabled
     ]
-
-
-def is_backup_disabled(service_config: ServiceConfig) -> bool:
-    value = service_config.backup_disabled
-    return value is not None and value.strip() not in {"", "0", "false", "False", "no", "No"}
 
 
 def remote_backup_dir(remote_root: str, hostname: str, service_name: str) -> str:
@@ -190,7 +182,7 @@ def stream_backup_to_remote(
     runtime_config: BackupRuntimeConfig,
 ) -> BackupResult:
     container_name = service_config.name
-    if not container_exists(container_name) or not container_is_running(container_name):
+    if not container_is_running(container_name):
         raise RuntimeError(f"{container_name}: service container is not running")
 
     dump_format = resolve_dump_format(service_config, global_config.backup_format)
@@ -201,12 +193,14 @@ def stream_backup_to_remote(
     remote_final_path = f"{remote_dir}/{final_name}"
 
     session.ensure_dir(remote_dir)
-    tmp_cleaned_count = cleanup_stale_tmp_files(session, remote_dir)
+    existing_entries = session.list_dir(remote_dir)
+    tmp_cleaned_count = _cleanup_tmp_entries(session, remote_dir, existing_entries)
     if dump_format == ".sql":
         size_bytes = _stream_plain_dump(session, container_name, service_config, remote_tmp_path, runtime_config)
     else:
         size_bytes = _stream_gzip_dump(session, container_name, service_config, remote_tmp_path, runtime_config)
-    _remove_existing_final_if_present(session, remote_dir, final_name)
+    if any(entry.filename == final_name for entry in existing_entries):
+        session.remove_file(f"{remote_dir}/{final_name}")
     session.rename_file(remote_tmp_path, remote_final_path)
 
     return BackupResult(
@@ -226,33 +220,17 @@ def _stream_plain_dump(
     remote_tmp_path: str,
     runtime_config: BackupRuntimeConfig,
 ) -> int:
-    dump_process = pg_dump_popen(
-        container_name,
-        service_config,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    assert dump_process.stdout is not None
     try:
-        uploaded = session.upload_stream(dump_process.stdout, remote_tmp_path)
-        dump_process.stdout.close()
-        dump_returncode = dump_process.wait(timeout=runtime_config.timeout_seconds)
-        dump_stderr = (
-            dump_process.stderr.read().decode("utf-8", "replace")
-            if dump_process.stderr is not None
-            else ""
+        uploaded = stream_pg_dump_to_consumer(
+            container_name,
+            service_config,
+            ".sql",
+            lambda stream: session.upload_stream(stream, remote_tmp_path),
+            timeout_seconds=runtime_config.timeout_seconds,
         )
     except Exception:
-        _terminate_process(dump_process)
         _remove_remote_tmp(session, remote_tmp_path)
         raise
-    finally:
-        if dump_process.stdout is not None:
-            dump_process.stdout.close()
-
-    if dump_returncode != 0:
-        _remove_remote_tmp(session, remote_tmp_path)
-        raise RuntimeError(f"{container_name}: pg_dump failed: {dump_stderr}")
     return uploaded.size_bytes
 
 
@@ -263,59 +241,18 @@ def _stream_gzip_dump(
     remote_tmp_path: str,
     runtime_config: BackupRuntimeConfig,
 ) -> int:
-    dump_process = pg_dump_popen(
-        container_name,
-        service_config,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    assert dump_process.stdout is not None
-    gzip_process = subprocess.Popen(
-        ["gzip", "-c"],
-        stdin=dump_process.stdout,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    assert gzip_process.stdout is not None
-    dump_process.stdout.close()
     try:
-        uploaded = session.upload_stream(gzip_process.stdout, remote_tmp_path)
-        gzip_process.stdout.close()
-        gzip_returncode = gzip_process.wait(timeout=runtime_config.timeout_seconds)
-        dump_returncode = dump_process.wait(timeout=runtime_config.timeout_seconds)
-        gzip_stderr = (
-            gzip_process.stderr.read().decode("utf-8", "replace")
-            if gzip_process.stderr is not None
-            else ""
-        )
-        dump_stderr = (
-            dump_process.stderr.read().decode("utf-8", "replace")
-            if dump_process.stderr is not None
-            else ""
+        uploaded = stream_pg_dump_to_consumer(
+            container_name,
+            service_config,
+            ".sql.gz",
+            lambda stream: session.upload_stream(stream, remote_tmp_path),
+            timeout_seconds=runtime_config.timeout_seconds,
         )
     except Exception:
-        _terminate_process(gzip_process)
-        _terminate_process(dump_process)
         _remove_remote_tmp(session, remote_tmp_path)
         raise
-    finally:
-        if gzip_process.stdout is not None:
-            gzip_process.stdout.close()
-
-    if dump_returncode != 0:
-        _remove_remote_tmp(session, remote_tmp_path)
-        raise RuntimeError(f"{container_name}: pg_dump failed: {dump_stderr}")
-    if gzip_returncode != 0:
-        _remove_remote_tmp(session, remote_tmp_path)
-        raise RuntimeError(f"{container_name}: gzip failed: {gzip_stderr}")
     return uploaded.size_bytes
-
-
-def _terminate_process(process: subprocess.Popen[bytes]) -> None:
-    with contextlib.suppress(OSError, ProcessLookupError):
-        process.kill()
-    with contextlib.suppress(Exception):
-        process.wait(timeout=5)
 
 
 def _remove_remote_tmp(session: RemoteSession, remote_tmp_path: str) -> None:
@@ -323,10 +260,14 @@ def _remove_remote_tmp(session: RemoteSession, remote_tmp_path: str) -> None:
         session.remove_file(remote_tmp_path)
 
 
-def _remove_existing_final_if_present(
+def _cleanup_tmp_entries(
     session: RemoteSession,
     remote_dir: str,
-    final_name: str,
-) -> None:
-    if any(entry.filename == final_name for entry in session.list_dir(remote_dir)):
-        session.remove_file(f"{remote_dir}/{final_name}")
+    entries: list[RemoteEntry],
+) -> int:
+    removed = 0
+    for entry in entries:
+        if entry.filename.endswith(".tmp"):
+            session.remove_file(f"{remote_dir}/{entry.filename}")
+            removed += 1
+    return removed

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import contextlib
+from dataclasses import replace
 import logging
 import socket
 from datetime import datetime
@@ -9,12 +9,11 @@ from pathlib import Path
 import typer
 
 from ops.core.config import load_global_config, load_service_config
-from ops.core.docker import container_exists, container_is_running
+from ops.core.docker import container_is_running
 from ops.core.ssh import build_remote_config, open_remote_session
-from ops.operations.postgres import format_size_gb
+from ops.operations.postgres import format_size_gb, query_database_size
 from ops.operations.restore import (
     build_restore_selection,
-    current_database_size,
     download_remote_restore,
     drop_and_recreate_service_database,
     list_local_restore_sources,
@@ -36,37 +35,41 @@ def restore(
 ) -> None:
     project_root = Path.cwd()
     service_config = load_service_config(project_root, name)
-    selected_source = _select_restore_source(project_root, service_config.name, path)
-    if selected_source is None:
-        return
+    global_config = load_global_config(project_root) if path is None else None
     temp_download_path: Path | None = None
 
-    try:
-        if selected_source.kind == "remote":
-            global_config = load_global_config(project_root)
-            remote_config = build_remote_config(global_config)
-            with open_remote_session(remote_config) as session:
+    if path is None:
+        assert global_config is not None
+        remote_config = build_remote_config(global_config)
+        with open_remote_session(remote_config) as session:
+            selected_source = _select_restore_source(
+                project_root,
+                service_config.name,
+                None,
+                remote_config=remote_config,
+                session=session,
+            )
+            if selected_source is None:
+                return
+            if selected_source.kind == "remote":
                 temp_download_path = download_remote_restore(
                     session,
                     selected_source.remote_path,
                     validate_restore_extension(selected_source.display_name),
                 )
-            selected_source = selected_source.__class__(
-                kind=selected_source.kind,
-                display_name=selected_source.display_name,
-                path=temp_download_path,
-                remote_path=selected_source.remote_path,
-                size_bytes=selected_source.size_bytes,
-                mtime_epoch=selected_source.mtime_epoch,
-                is_temporary_local_copy=True,
-            )
+                selected_source = replace(selected_source, path=temp_download_path)
+    else:
+        selected_source = _select_restore_source(project_root, service_config.name, path)
+        if selected_source is None:
+            return
 
+    try:
         container_name = service_config.name
-        if not container_exists(container_name) or not container_is_running(container_name):
+        if not container_is_running(container_name):
             LOGGER.warning("%s: service container is not running; start it first", container_name)
             return
 
-        current_size = current_database_size(container_name, service_config)
+        current_size = query_database_size(container_name, service_config)
         LOGGER.warning("Restore will replace current data:")
         LOGGER.warning("service: %s", service_config.name)
         LOGGER.warning("current size: %s", format_size_gb(current_size))
@@ -112,22 +115,27 @@ def restore(
             temp_download_path.unlink(missing_ok=True)
 
 
-def _select_restore_source(project_root: Path, service_name: str, path: str | None):
+def _select_restore_source(
+    project_root: Path,
+    service_name: str,
+    path: str | None,
+    *,
+    remote_config=None,
+    session=None,
+):
     if path is not None:
         local_path = Path(path)
         validate_restore_extension(local_path)
         return restore_source_from_path(local_path)
 
     local_sources = list_local_restore_sources(project_root, service_name)
-    global_config = load_global_config(project_root)
-    remote_config = build_remote_config(global_config)
-    with open_remote_session(remote_config) as session:
-        remote_sources = list_remote_restore_sources(
-            session,
-            remote_config.backup_path,
-            socket.gethostname(),
-            service_name,
-        )
+    assert remote_config is not None and session is not None
+    remote_sources = list_remote_restore_sources(
+        session,
+        remote_config.backup_path,
+        socket.gethostname(),
+        service_name,
+    )
     sources = build_restore_selection(local_sources, remote_sources)
     if not sources:
         LOGGER.info("No restore sources found for %s", service_name)

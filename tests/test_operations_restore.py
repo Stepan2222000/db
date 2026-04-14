@@ -66,7 +66,6 @@ def test_build_restore_selection_sorts_newest_first_with_local_tiebreaker(tmp_pa
         remote_path=None,
         size_bytes=1,
         mtime_epoch=100,
-        is_temporary_local_copy=False,
     )
     remote_same_time = restore_ops.RestoreSource(
         kind="remote",
@@ -75,7 +74,6 @@ def test_build_restore_selection_sorts_newest_first_with_local_tiebreaker(tmp_pa
         remote_path="/root/backups/remote.sql.gz",
         size_bytes=1,
         mtime_epoch=100,
-        is_temporary_local_copy=False,
     )
     newer_remote = restore_ops.RestoreSource(
         kind="remote",
@@ -84,7 +82,6 @@ def test_build_restore_selection_sorts_newest_first_with_local_tiebreaker(tmp_pa
         remote_path="/root/backups/newer.sql.gz",
         size_bytes=1,
         mtime_epoch=200,
-        is_temporary_local_copy=False,
     )
 
     selection = restore_ops.build_restore_selection([local], [remote_same_time, newer_remote])
@@ -150,27 +147,25 @@ def test_restore_sql_file_uses_interactive_docker_exec(monkeypatch: pytest.Monke
         def communicate(self):
             return (b"", b"")
 
-    def fake_popen(container_name, argv, **kwargs):
-        captured["container_name"] = container_name
-        captured["argv"] = argv
+    def fake_popen(*args, **kwargs):
+        captured["args"] = args
         captured["kwargs"] = kwargs
         return FakeProcess()
 
-    monkeypatch.setattr(restore_ops, "docker_exec_popen", fake_popen)
+    monkeypatch.setattr(restore_ops, "psql_popen", fake_popen)
 
     restore_ops.restore_sql_file("demo", "admin", "demo", sql_path)
 
-    assert captured["container_name"] == "demo"
-    assert captured["argv"] == [
-        "psql",
-        "-v",
-        "ON_ERROR_STOP=1",
-        "--username",
-        "admin",
-        "--dbname",
+    assert captured["args"] == (
         "demo",
-    ]
+        "admin",
+        "demo",
+    )
+    assert captured["kwargs"]["extra_argv"] == []
     assert captured["kwargs"]["interactive"] is True
+    assert captured["kwargs"]["stdin"].name == str(sql_path)
+    assert captured["kwargs"]["stdout"] == subprocess.PIPE
+    assert captured["kwargs"]["stderr"] == subprocess.PIPE
 
 
 def test_restore_gzip_file_checks_both_processes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -194,7 +189,7 @@ def test_restore_gzip_file_checks_both_processes(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeGzipProcess())
     monkeypatch.setattr(
         restore_ops,
-        "docker_exec_popen",
+        "psql_popen",
         lambda *args, **kwargs: FakePsqlProcess(),
     )
 

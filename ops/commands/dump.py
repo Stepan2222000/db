@@ -9,12 +9,12 @@ from pathlib import Path
 import typer
 
 from ops.core.config import load_service_config
-from ops.core.docker import container_exists, container_is_running
+from ops.core.docker import container_is_running
 from ops.operations.postgres import (
-    pg_dump_popen,
     query_database_size,
     required_dump_bytes,
     resolve_dump_format,
+    stream_pg_dump_to_consumer,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -25,7 +25,7 @@ def dump(name: str = typer.Argument(..., metavar="NAME")) -> None:
     service_config = load_service_config(project_root, name)
     container_name = service_config.name
 
-    if not container_exists(container_name) or not container_is_running(container_name):
+    if not container_is_running(container_name):
         LOGGER.warning("%s: service container is not running", container_name)
         return
 
@@ -64,57 +64,19 @@ def dump(name: str = typer.Argument(..., metavar="NAME")) -> None:
 
 def _write_plain_dump(container_name, service_config, dump_path: Path) -> None:
     with dump_path.open("wb") as handle:
-        process = pg_dump_popen(
+        stream_pg_dump_to_consumer(
             container_name,
             service_config,
-            stdout=handle,
-            stderr=subprocess.PIPE,
-        )
-        _, stderr_bytes = process.communicate()
-
-    if process.returncode != 0:
-        raise subprocess.CalledProcessError(
-            process.returncode,
-            ["docker", "exec", container_name, "pg_dump"],
-            stderr=(stderr_bytes or b"").decode("utf-8", "replace"),
+            ".sql",
+            lambda stream: shutil.copyfileobj(stream, handle),
         )
 
 
 def _write_gzip_dump(container_name, service_config, dump_path: Path) -> None:
     with dump_path.open("wb") as handle:
-        dump_process = pg_dump_popen(
+        stream_pg_dump_to_consumer(
             container_name,
             service_config,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        try:
-            gzip_process = subprocess.Popen(
-                ["gzip", "-c"],
-                stdin=dump_process.stdout,
-                stdout=handle,
-                stderr=subprocess.PIPE,
-            )
-            assert dump_process.stdout is not None
-            dump_process.stdout.close()
-            _, gzip_stderr = gzip_process.communicate()
-            dump_returncode = dump_process.wait()
-            dump_stderr = (
-                dump_process.stderr.read() if dump_process.stderr is not None else b""
-            )
-        finally:
-            if dump_process.stdout is not None:
-                dump_process.stdout.close()
-
-    if dump_returncode != 0:
-        raise subprocess.CalledProcessError(
-            dump_returncode,
-            ["docker", "exec", container_name, "pg_dump"],
-            stderr=dump_stderr.decode("utf-8", "replace"),
-        )
-    if gzip_process.returncode != 0:
-        raise subprocess.CalledProcessError(
-            gzip_process.returncode,
-            ["gzip", "-c"],
-            stderr=(gzip_stderr or b"").decode("utf-8", "replace"),
+            ".sql.gz",
+            lambda stream: shutil.copyfileobj(stream, handle),
         )

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from ops.core.docker import container_exists, container_is_running
+from ops.core.docker import container_is_running
 from ops.operations.postgres import format_size_gb, query_database_size
 from ops.operations.services import load_all_service_configs
 
@@ -18,9 +18,7 @@ def sizes() -> None:
         return
 
     for service_config in service_configs:
-        if not container_exists(service_config.name) or not container_is_running(
-            service_config.name
-        ):
+        if not container_is_running(service_config.name):
             LOGGER.info("%s: stopped, start the service first", service_config.name)
             continue
 

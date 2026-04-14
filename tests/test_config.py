@@ -26,13 +26,13 @@ def test_load_global_config_defaults_version_to_18(tmp_path: Path) -> None:
     assert config.remote_user is None
     assert config.remote_password is None
     assert config.remote_backup_path is None
-    assert config.backup_enabled is None
+    assert config.backup_enabled is False
     assert config.backup_schedule is None
     assert config.backup_format is None
     assert config.backup_timeout_seconds is None
     assert config.backup_max_days is None
     assert config.backup_max_files is None
-    assert config.metrics_enabled is None
+    assert config.metrics_enabled is False
     assert config.metrics_interval_minutes is None
 
 
@@ -71,7 +71,7 @@ def test_load_global_config_reads_backup_settings(tmp_path: Path) -> None:
 
     config = load_global_config(tmp_path)
 
-    assert config.backup_enabled == "1"
+    assert config.backup_enabled is True
     assert config.backup_schedule == "*/10 * * * *"
     assert config.backup_format == ".sql"
     assert config.backup_timeout_seconds == 120
@@ -88,7 +88,7 @@ def test_load_global_config_reads_metrics_settings(tmp_path: Path) -> None:
 
     config = load_global_config(tmp_path)
 
-    assert config.metrics_enabled == "1"
+    assert config.metrics_enabled is True
     assert config.metrics_interval_minutes == 5
 
 

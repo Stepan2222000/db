@@ -10,14 +10,6 @@ from crontab import CronTab
 from ops.operations import autobackup as autobackup_ops
 
 
-def test_is_enabled_flag_truthy_and_falsy() -> None:
-    assert autobackup_ops.is_enabled_flag("1") is True
-    assert autobackup_ops.is_enabled_flag("yes") is True
-    assert autobackup_ops.is_enabled_flag("0") is False
-    assert autobackup_ops.is_enabled_flag("false") is False
-    assert autobackup_ops.is_enabled_flag(None) is False
-
-
 def test_install_autobackup_writes_backup_and_metrics_jobs(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -173,25 +165,46 @@ def test_collect_metrics_samples_filters_stopped_containers(
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(autobackup_ops, "container_exists", lambda name: True)
-    monkeypatch.setattr(autobackup_ops, "container_is_running", lambda name: name == "alpha")
+    monkeypatch.setattr(
+        autobackup_ops,
+        "load_all_service_configs",
+        lambda project_root: [
+            type("Cfg", (), {"name": "alpha"})(),
+            type("Cfg", (), {"name": "beta"})(),
+        ],
+    )
     monkeypatch.setattr(
         autobackup_ops,
         "docker_stats_no_stream",
-        lambda name: type(
+        lambda: type(
             "StatsResult",
             (),
             {
-                "stdout": json.dumps(
-                    {
-                        "Name": name,
-                        "CPUPerc": "1.00%",
-                        "MemUsage": "1MiB / 1GiB",
-                        "MemPerc": "0.10%",
-                        "NetIO": "1kB / 2kB",
-                        "BlockIO": "3kB / 4kB",
-                        "PIDs": "5",
-                    }
+                "stdout": "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "Name": "alpha",
+                                "CPUPerc": "1.00%",
+                                "MemUsage": "1MiB / 1GiB",
+                                "MemPerc": "0.10%",
+                                "NetIO": "1kB / 2kB",
+                                "BlockIO": "3kB / 4kB",
+                                "PIDs": "5",
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "Name": "unmanaged",
+                                "CPUPerc": "2.00%",
+                                "MemUsage": "2MiB / 1GiB",
+                                "MemPerc": "0.20%",
+                                "NetIO": "3kB / 4kB",
+                                "BlockIO": "5kB / 6kB",
+                                "PIDs": "6",
+                            }
+                        ),
+                    ]
                 )
             },
         )(),
