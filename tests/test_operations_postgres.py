@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import subprocess
 from pathlib import Path
 
@@ -205,3 +204,97 @@ def test_sync_service_password_escapes_password_in_sql(monkeypatch: pytest.Monke
     assert captured["database"] == "postgres"
     assert captured["stdin_sql"] is True
     assert captured["sql"] == 'ALTER ROLE "ad""min" WITH PASSWORD \'pa\'\'ss\';\n'
+
+
+def test_resolve_dump_format_defaults_and_validates(
+    tmp_path: Path,
+) -> None:
+    default_cfg = ServiceConfig(
+        name="demo",
+        env_path=tmp_path / "services" / ".env.demo",
+        postgres_user="admin",
+        postgres_password="secret",
+        postgres_port=5401,
+    )
+    plain_cfg = ServiceConfig(
+        name="demo",
+        env_path=tmp_path / "services" / ".env.demo",
+        postgres_user="admin",
+        postgres_password="secret",
+        postgres_port=5401,
+        backup_format=".sql",
+    )
+    gzip_cfg = ServiceConfig(
+        name="demo",
+        env_path=tmp_path / "services" / ".env.demo",
+        postgres_user="admin",
+        postgres_password="secret",
+        postgres_port=5401,
+        backup_format=".sql.gz",
+    )
+    invalid_cfg = ServiceConfig(
+        name="demo",
+        env_path=tmp_path / "services" / ".env.demo",
+        postgres_user="admin",
+        postgres_password="secret",
+        postgres_port=5401,
+        backup_format=".zip",
+    )
+
+    assert postgres_ops.resolve_dump_format(default_cfg) == ".sql.gz"
+    assert postgres_ops.resolve_dump_format(plain_cfg) == ".sql"
+    assert postgres_ops.resolve_dump_format(gzip_cfg) == ".sql.gz"
+    with pytest.raises(ValueError, match="POSTGRES_BACKUP_FORMAT"):
+        postgres_ops.resolve_dump_format(invalid_cfg)
+
+
+def test_required_dump_bytes_uses_expected_ratios() -> None:
+    assert postgres_ops.required_dump_bytes(1000, ".sql") == 1000
+    assert postgres_ops.required_dump_bytes(1000, ".sql.gz") == 300
+    assert postgres_ops.required_dump_bytes(1001, ".sql.gz") == 301
+    with pytest.raises(ValueError, match="Unsupported dump format"):
+        postgres_ops.required_dump_bytes(1000, ".zip")
+
+
+def test_pg_dump_popen_builds_expected_command(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+    service_config = ServiceConfig(
+        name="demo",
+        env_path=tmp_path / "services" / ".env.demo",
+        postgres_user="admin",
+        postgres_password="secret",
+        postgres_port=5401,
+    )
+
+    class FakeProcess:
+        pass
+
+    def fake_popen(container_name, argv, **kwargs):
+        captured["container_name"] = container_name
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setattr(postgres_ops, "docker_exec_popen", fake_popen)
+
+    process = postgres_ops.pg_dump_popen(
+        "demo",
+        service_config,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    assert isinstance(process, FakeProcess)
+    assert captured["container_name"] == "demo"
+    assert captured["argv"] == [
+        "pg_dump",
+        "-U",
+        "admin",
+        "-d",
+        "demo",
+    ]
+    assert captured["kwargs"]["stdout"] == subprocess.PIPE
+    assert captured["kwargs"]["stderr"] == subprocess.PIPE

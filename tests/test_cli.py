@@ -8,6 +8,7 @@ import pytest
 
 from ops.commands import add as add_command
 from ops.commands import apply as apply_command
+from ops.commands import dump as dump_command
 from ops.commands import remove as remove_command
 from ops.commands import sizes as sizes_command
 from ops.cli import generate_compose
@@ -17,7 +18,7 @@ from ops.operations import services as services_ops
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_COMMANDS = ("add", "remove", "apply", "backup", "dump", "restore", "sizes", "autobackup")
-STUB_COMMANDS = ("backup", "dump", "restore", "autobackup")
+STUB_COMMANDS = ("backup", "restore", "autobackup")
 
 
 def test_generate_compose_internal_api_smoke(tmp_path: Path) -> None:
@@ -406,6 +407,181 @@ def test_remove_force_keeps_other_services_in_compose(
     compose_text = (tmp_path / "compose.yaml").read_text(encoding="utf-8")
     assert "alpha:" in compose_text
     assert "beta:" not in compose_text
+
+
+def test_dump_logs_when_container_is_not_running(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    services_dir = tmp_path / "services"
+    services_dir.mkdir()
+    (services_dir / ".env.demo").write_text(
+        "POSTGRES_USER=admin\n"
+        "POSTGRES_PASSWORD=secret\n"
+        "POSTGRES_PORT=5401\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(dump_command, "container_exists", lambda name: False)
+
+    with caplog.at_level("INFO"):
+        dump_command.dump("demo")
+
+    assert "demo: service container is not running" in caplog.text
+    assert not (tmp_path / "dumps").exists()
+
+
+def test_dump_rejects_invalid_backup_format(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    services_dir = tmp_path / "services"
+    services_dir.mkdir()
+    (services_dir / ".env.demo").write_text(
+        "POSTGRES_USER=admin\n"
+        "POSTGRES_PASSWORD=secret\n"
+        "POSTGRES_PORT=5401\n"
+        "POSTGRES_BACKUP_FORMAT=.zip\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(dump_command, "container_exists", lambda name: True)
+    monkeypatch.setattr(dump_command, "container_is_running", lambda name: True)
+    monkeypatch.setattr(dump_command, "query_database_size", lambda *args, **kwargs: 1000)
+
+    with pytest.raises(ValueError, match="POSTGRES_BACKUP_FORMAT"):
+        dump_command.dump("demo")
+
+
+def test_dump_logs_when_disk_space_is_insufficient(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    services_dir = tmp_path / "services"
+    services_dir.mkdir()
+    (services_dir / ".env.demo").write_text(
+        "POSTGRES_USER=admin\n"
+        "POSTGRES_PASSWORD=secret\n"
+        "POSTGRES_PORT=5401\n",
+        encoding="utf-8",
+    )
+
+    class FakeDiskUsage:
+        free = 100
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(dump_command, "container_exists", lambda name: True)
+    monkeypatch.setattr(dump_command, "container_is_running", lambda name: True)
+    monkeypatch.setattr(dump_command, "query_database_size", lambda *args, **kwargs: 1000)
+    monkeypatch.setattr(dump_command.shutil, "disk_usage", lambda path: FakeDiskUsage())
+    monkeypatch.setattr(
+        dump_command,
+        "_write_gzip_dump",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("dump writer should not run")
+        ),
+    )
+
+    with caplog.at_level("INFO"):
+        dump_command.dump("demo")
+
+    assert "not enough free space for dump" in caplog.text
+    assert list((tmp_path / "dumps").glob("*")) == []
+
+
+def test_dump_writes_plain_file_when_format_is_sql(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    services_dir = tmp_path / "services"
+    services_dir.mkdir()
+    (services_dir / ".env.demo").write_text(
+        "POSTGRES_USER=admin\n"
+        "POSTGRES_PASSWORD=secret\n"
+        "POSTGRES_PORT=5401\n"
+        "POSTGRES_BACKUP_FORMAT=.sql\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(dump_command, "container_exists", lambda name: True)
+    monkeypatch.setattr(dump_command, "container_is_running", lambda name: True)
+    monkeypatch.setattr(dump_command, "query_database_size", lambda *args, **kwargs: 1000)
+
+    def fake_write_plain(container_name, service_config, dump_path):
+        dump_path.write_bytes(b"plain dump")
+
+    monkeypatch.setattr(dump_command, "_write_plain_dump", fake_write_plain)
+
+    dump_command.dump("demo")
+
+    dump_files = list((tmp_path / "dumps").glob("demo_*.sql"))
+    assert len(dump_files) == 1
+    assert dump_files[0].read_bytes() == b"plain dump"
+
+
+def test_dump_writes_gzip_file_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    services_dir = tmp_path / "services"
+    services_dir.mkdir()
+    (services_dir / ".env.demo").write_text(
+        "POSTGRES_USER=admin\n"
+        "POSTGRES_PASSWORD=secret\n"
+        "POSTGRES_PORT=5401\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(dump_command, "container_exists", lambda name: True)
+    monkeypatch.setattr(dump_command, "container_is_running", lambda name: True)
+    monkeypatch.setattr(dump_command, "query_database_size", lambda *args, **kwargs: 1000)
+
+    def fake_write_gzip(container_name, service_config, dump_path):
+        dump_path.write_bytes(b"gzip dump")
+
+    monkeypatch.setattr(dump_command, "_write_gzip_dump", fake_write_gzip)
+
+    dump_command.dump("demo")
+
+    dump_files = list((tmp_path / "dumps").glob("demo_*.sql.gz"))
+    assert len(dump_files) == 1
+    assert dump_files[0].read_bytes() == b"gzip dump"
+
+
+def test_dump_removes_partial_file_on_writer_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    services_dir = tmp_path / "services"
+    services_dir.mkdir()
+    (services_dir / ".env.demo").write_text(
+        "POSTGRES_USER=admin\n"
+        "POSTGRES_PASSWORD=secret\n"
+        "POSTGRES_PORT=5401\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(dump_command, "container_exists", lambda name: True)
+    monkeypatch.setattr(dump_command, "container_is_running", lambda name: True)
+    monkeypatch.setattr(dump_command, "query_database_size", lambda *args, **kwargs: 1000)
+
+    def fake_write_gzip(container_name, service_config, dump_path):
+        dump_path.write_bytes(b"partial")
+        raise RuntimeError("dump failed")
+
+    monkeypatch.setattr(dump_command, "_write_gzip_dump", fake_write_gzip)
+
+    with pytest.raises(RuntimeError, match="dump failed"):
+        dump_command.dump("demo")
+
+    assert list((tmp_path / "dumps").glob("*")) == []
 
 
 def test_sizes_logs_when_no_services_found(

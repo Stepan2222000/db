@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import math
 import subprocess
 import time
+from typing import BinaryIO
 
 from ops.core.docker import docker_exec_capture, docker_exec_popen
 from ops.core.models import ServiceConfig
+
+VALID_DUMP_FORMATS = frozenset({".sql", ".sql.gz"})
 
 
 def wait_for_pg_ready(
@@ -132,6 +136,47 @@ def query_database_size(
         raise ValueError(
             f"{container_name}: pg_database_size returned a non-integer value: {value!r}"
         ) from exc
+
+
+def resolve_dump_format(service_config: ServiceConfig) -> str:
+    if service_config.backup_format is None:
+        return ".sql.gz"
+
+    dump_format = service_config.backup_format.strip()
+    if dump_format not in VALID_DUMP_FORMATS:
+        raise ValueError(
+            f"{service_config.env_path}: POSTGRES_BACKUP_FORMAT must be one of .sql, .sql.gz"
+        )
+    return dump_format
+
+
+def required_dump_bytes(size_bytes: int, dump_format: str) -> int:
+    if dump_format == ".sql":
+        return size_bytes
+    if dump_format == ".sql.gz":
+        return math.ceil(size_bytes * 0.3)
+    raise ValueError(f"Unsupported dump format: {dump_format}")
+
+
+def pg_dump_popen(
+    container_name: str,
+    service_config: ServiceConfig,
+    *,
+    stdout: int | BinaryIO | None,
+    stderr: int | BinaryIO | None,
+) -> subprocess.Popen[bytes]:
+    return docker_exec_popen(
+        container_name,
+        [
+            "pg_dump",
+            "-U",
+            service_config.postgres_user,
+            "-d",
+            service_config.name,
+        ],
+        stdout=stdout,
+        stderr=stderr,
+    )
 
 
 def format_size_gb(size_bytes: int) -> str:
