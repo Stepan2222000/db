@@ -7,6 +7,7 @@ import typer
 
 from ops.core.config import load_global_config, load_service_config, service_env_path
 from ops.core.docker import compose_up
+from ops.core.network import detect_server_host
 from ops.operations.postgres import wait_for_pg_ready
 from ops.operations.services import (
     create_service_env,
@@ -66,7 +67,7 @@ def add(
     )
 
     LOGGER.info("Connection parameters:")
-    LOGGER.info("host: 127.0.0.1")
+    LOGGER.info("host: %s", detect_server_host())
     LOGGER.info("port: %s", created_service_config.postgres_port)
     LOGGER.info("database: %s", created_service_config.name)
     LOGGER.info("user: %s", created_service_config.postgres_user)

@@ -140,6 +140,7 @@ def test_add_confirm_runs_compose_and_wait(
             (container_name, service_name, postgres_user)
         ),
     )
+    monkeypatch.setattr(add_command, "detect_server_host", lambda: "2.26.53.128")
 
     add_command.add("demo", port=None, password="pw1")
 
