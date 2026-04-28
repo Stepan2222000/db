@@ -203,7 +203,7 @@ def _parse_global_positive_int(raw_value: str | None, field_name: str) -> int | 
 def _parse_boolish_flag(raw_value: str | None) -> bool:
     if raw_value is None:
         return False
-    return raw_value.strip() not in {"", "0", "false", "False", "no", "No"}
+    return raw_value.strip().lower() not in {"", "0", "false", "no"}
 
 
 def _parse_backup_format(raw_value: str | None, field_name: str) -> str | None:

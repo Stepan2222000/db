@@ -17,7 +17,6 @@ POSTGRES_VERSION_PATTERN = re.compile(r"^(?P<major>\d+)")
 
 
 def build_compose(
-    project_root: Path,
     global_config: GlobalConfig,
     service_configs: list[ServiceConfig],
 ) -> dict[str, object]:

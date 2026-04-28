@@ -1,5 +1,6 @@
 .env
 services/.env.*
+compose.yaml
 data/
 dumps/
 metrics.db

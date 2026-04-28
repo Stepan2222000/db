@@ -20,7 +20,6 @@ def test_build_compose_includes_raw_env_file_and_derived_db(monkeypatch: pytest.
     monkeypatch.setattr("ops.core.compose.read_mem_total_bytes", lambda: 1000)
 
     compose = build_compose(
-        tmp_path,
         GlobalConfig(postgres_version="18", default_postgres_password=None),
         [
             ServiceConfig(
@@ -52,7 +51,6 @@ def test_build_compose_uses_same_shm_size_for_all_services(monkeypatch: pytest.M
     monkeypatch.setattr("ops.core.compose.read_mem_total_bytes", lambda: 2000)
 
     compose = build_compose(
-        tmp_path,
         GlobalConfig(postgres_version="18", default_postgres_password=None),
         [
             ServiceConfig(

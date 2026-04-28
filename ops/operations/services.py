@@ -88,7 +88,7 @@ def generate_compose(project_root: Path) -> Path:
         )
     return write_compose(
         project_root,
-        build_compose(project_root, global_config, service_configs),
+        build_compose(global_config, service_configs),
     )
 
 
